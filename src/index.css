@@ -1,0 +1,145 @@
+@import "tailwindcss";
+
+@theme {
+  /* ── Surface / Background tokens ─────────────────────────────────────────── */
+  --color-surface-container-highest: #23262c;
+  --color-on-surface-variant:        #aaabb0;
+  --color-secondary-fixed:           #ffbdf3;
+  --color-on-secondary-fixed:        #620061;
+  --color-primary-fixed-dim:         #00deec;
+  --color-inverse-surface:           #f9f9ff;
+  --color-on-tertiary:               #001c53;
+  --color-tertiary-fixed-dim:        #7da0ff;
+  --color-on-primary-container:      #005359;
+  --color-on-tertiary-fixed-variant: #003388;
+  --color-surface-container-high:    #1d2025;
+
+  /* ── Semantic colour tokens (Holo Blue defaults) ────────────────────────── */
+  /* These are compiled into :root by Tailwind. The theme overrides below     */
+  /* use bare CSS (outside @layer) at higher cascade priority to override.    */
+  --color-primary:           #8ff5ff;
+  --color-on-primary:        #005d63;
+  --color-primary-container: #00eefc;
+  --color-on-tertiary-container: #ffffff;
+  --color-on-error:          #490006;
+  --color-tertiary-fixed:    #92aeff;
+  --color-tertiary:          #759aff;
+  --color-on-secondary-container: #fff5f9;
+  --color-on-tertiary-fixed: #001441;
+  --color-on-secondary:      #400040;
+  --color-error-dim:         #d7383b;
+  --color-primary-fixed:     #00eefc;
+  --color-background:        #0c0e12;
+  --color-surface-container-low: #111318;
+  --color-on-error-container: #ffa8a3;
+  --color-on-background:     #f6f6fc;
+  --color-tertiary-dim:      #156aff;
+  --color-surface-variant:   #23262c;
+  --color-surface-container: #171a1f;
+  --color-surface-dim:       #0c0e12;
+  --color-on-surface:        #f6f6fc;
+  --color-inverse-on-surface: #53555a;
+  --color-tertiary-container: #0266ff;
+  --color-outline-variant:   #46484d;
+  --color-secondary-container: #a900a9;
+  --color-inverse-primary:   #006a71;
+  --color-surface-tint:      #8ff5ff;
+  --color-error-container:   #9f0519;
+  --color-on-secondary-fixed-variant: #920091;
+  --color-surface-bright:    #292c33;
+  --color-secondary:         #ff51fa;
+  --color-secondary-dim:     #ff51fa;
+  --color-surface-container-lowest: #000000;
+  --color-error:             #ff716c;
+  --color-on-primary-fixed:  #003f43;
+  --color-secondary-fixed-dim: #ffa6f3;
+  --color-surface:           #0c0e12;
+  --color-outline:           #74757a;
+  --color-on-primary-fixed-variant: #005e64;
+
+  --radius-DEFAULT: 0.25rem;
+  --radius-lg:      0.5rem;
+  --radius-xl:      0.75rem;
+  --radius-full:    9999px;
+
+  --font-headline: "Space Grotesk", sans-serif;
+  --font-body:     "Inter", sans-serif;
+  --font-label:    "Space Grotesk", sans-serif;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THEME OVERRIDES
+   These are BARE CSS (outside any @layer) so their cascade order is after
+   Tailwind's generated @layer base output, giving them higher priority.
+   html[data-theme] selector adds extra specificity over bare :root.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Holo Blue (default — redundant but explicit) */
+html,
+html[data-theme="holo-blue"] {
+  --color-primary:           #8ff5ff;
+  --color-on-primary:        #005d63;
+  --color-primary-container: #00eefc;
+  --color-secondary:         #ff51fa;
+  --color-surface-tint:      #8ff5ff;
+  --theme-grid-color:        rgba(143, 245, 255, 0.03);
+  --theme-accent-hex:        143 245 255;
+}
+
+/* Crimson theme */
+html[data-theme="crimson"] {
+  --color-primary:           #ff4f6d;
+  --color-on-primary:        #fff0f2;
+  --color-primary-container: #ff1744;
+  --color-secondary:         #ff9800;
+  --color-surface-tint:      #ff4f6d;
+  --theme-grid-color:        rgba(255, 79, 109, 0.03);
+  --theme-accent-hex:        255 79 109;
+}
+
+/* ─── Global base ──────────────────────────────────────────────────────────── */
+@layer base {
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-on-surface);
+    font-family: var(--font-body);
+    overflow: hidden;
+  }
+}
+
+/* ─── Utilities ────────────────────────────────────────────────────────────── */
+@layer utilities {
+  .space-grotesk { font-family: var(--font-headline); }
+
+  .glass-panel {
+    background: rgba(12, 14, 18, 0.4);
+    backdrop-filter: blur(40px);
+    border: 1px solid rgba(70, 72, 77, 0.15);
+  }
+
+  /* Canvas background grid — color follows active theme */
+  .canvas-grid {
+    background-image:
+      linear-gradient(to right, var(--theme-grid-color, rgba(143,245,255,0.03)) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--theme-grid-color, rgba(143,245,255,0.03)) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  .neon-selection {
+    box-shadow: 0 0 20px rgba(var(--theme-accent-hex, 143 245 255) / 0.3);
+  }
+
+  /* Custom scrollbar */
+  .custom-scrollbar::-webkit-scrollbar        { width: 4px; }
+  .custom-scrollbar::-webkit-scrollbar-track  { background: transparent; }
+  .custom-scrollbar::-webkit-scrollbar-thumb  {
+    background: rgba(var(--theme-accent-hex, 143 245 255) / 0.25);
+    border-radius: 2px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(var(--theme-accent-hex, 143 245 255) / 0.45);
+  }
+}
