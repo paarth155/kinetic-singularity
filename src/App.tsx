@@ -3,6 +3,8 @@ import { useHandTracking } from './useHandTracking';
 
 type Vector2 = { x: number; y: number };
 
+type StrokeBounds = { minX: number; minY: number; maxX: number; maxY: number };
+
 type Stroke = {
   id: string;
   points: Vector2[];
@@ -11,7 +13,30 @@ type Stroke = {
   scale: number;
   rotation: number;
   translate: Vector2;
+  centroid: Vector2; // cached centroid for O(1) hover/select lookups
+  bounds: StrokeBounds; // cached bounding box for O(1) render setup
+  birthTime: number; // timestamp for birth animation
 };
+
+function computeCentroid(points: Vector2[]): Vector2 {
+  if (points.length === 0) return { x: 0, y: 0 };
+  let cx = 0, cy = 0;
+  for (let i = 0; i < points.length; i++) { cx += points[i].x; cy += points[i].y; }
+  return { x: cx / points.length, y: cy / points.length };
+}
+
+function computeBounds(points: Vector2[]): StrokeBounds {
+  if (points.length === 0) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, minY, maxX, maxY };
+}
 
 type Layer = {
   id: string;
@@ -27,6 +52,35 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hudCanvasRef = useRef<HTMLCanvasElement>(null);
   const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // ─── Offscreen cache for completed strokes ───────────────────────────────
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cacheInvalidRef = useRef<boolean>(true); // start dirty so first frame renders
+  const prevTransformKeyRef = useRef<string>(''); // detect transform changes
+  const prevHoveredIdRef = useRef<string | null>(null); // track hover changes for cache invalidation
+
+  // ─── Stroke index & cached visible strokes (rebuilt only when dirty) ─────
+  const strokeIndexRef = useRef<Map<string, Stroke>>(new Map());
+  const visibleStrokesRef = useRef<Stroke[]>([]);
+  const visibleStrokesDirtyRef = useRef<boolean>(true);
+
+  function rebuildStrokeIndex() {
+    const map = new Map<string, Stroke>();
+    const visible: Stroke[] = [];
+    for (const layer of layersRef.current) {
+      for (const stroke of layer.strokes) {
+        map.set(stroke.id, stroke);
+      }
+      if (layer.visible) {
+        for (const stroke of layer.strokes) {
+          visible.push(stroke);
+        }
+      }
+    }
+    strokeIndexRef.current = map;
+    visibleStrokesRef.current = visible;
+    visibleStrokesDirtyRef.current = false;
+  }
   
   const { hands, handsRef, isReady, latency } = useHandTracking(videoRef, hudCanvasRef);
   
@@ -39,6 +93,7 @@ export default function App() {
   const activeLayerIdRef = useRef<string>('layer-1');
 
   const syncLayersState = () => setLayers(layersRef.current.map(l => ({ ...l, strokes: l.strokes })));
+  const invalidateCache = () => { cacheInvalidRef.current = true; visibleStrokesDirtyRef.current = true; };
 
   const addLayer = () => {
     const id = `layer-${Date.now()}`;
@@ -46,6 +101,7 @@ export default function App() {
     const newLayer: Layer = { id, name, visible: true, locked: false, strokes: [] };
     layersRef.current = [...layersRef.current, newLayer];
     activeLayerIdRef.current = id;
+    invalidateCache();
     syncLayersState();
   };
 
@@ -56,12 +112,13 @@ export default function App() {
     if (activeLayerIdRef.current === id) {
       activeLayerIdRef.current = layersRef.current[layersRef.current.length - 1].id;
     }
+    invalidateCache();
     syncLayersState();
   };
 
   const toggleLayerVisibility = (id: string) => {
     const layer = layersRef.current.find(l => l.id === id);
-    if (layer) { layer.visible = !layer.visible; syncLayersState(); }
+    if (layer) { layer.visible = !layer.visible; invalidateCache(); syncLayersState(); }
   };
 
   const renameLayer = (id: string, name: string) => {
@@ -79,12 +136,14 @@ export default function App() {
   const globalTransformRef = useRef({ scale: 1, rotation: 0 });
   const targetParallaxRef = useRef({ x: 0, y: 0 });
   const currentParallaxRef = useRef({ x: 0, y: 0 });
+  const lastAppliedParallaxRef = useRef({ x: -999, y: -999 }); // for threshold comparison
   // Cursor preview: tracks right-hand index tip on the drawing canvas
   const cursorRef = useRef<{ x: number; y: number; visible: boolean; drawing: boolean; selecting: boolean }>({
     x: 0, y: 0, visible: false, drawing: false, selecting: false
   });
   // Hovered / selected-via-proximity stroke
   const hoveredStrokeIdRef = useRef<string | null>(null);
+  const penDownRippleRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
   const [activeTab, setActiveTab] = useState<string>('Draw');
   const [activeModal, setActiveModal] = useState<string | null>(null);
@@ -102,18 +161,18 @@ export default function App() {
     } else {
       brushColorRef.current = brushColorRef.current === '#ff4f6d' ? '#8ff5ff' : brushColorRef.current;
     }
+    invalidateCache(); // Rebuild cache with new theme selection colors
   }, []);
 
-  // ─── Tracking quality (applied to handsRef smoothing decisions) ──────────────
-  // Lower smoothingRef = less EMA smoothing (more responsive), higher = smoother
-  const trackingQualityRef = useRef<'high' | 'balanced' | 'economy'>('balanced');
+  // trackingQuality: currently visual-only (no runtime effect), kept for future wiring
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = (msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToastMessage(msg);
-    // Auto-clear toast
-    setTimeout(() => setToastMessage(null), 3000);
+    toastTimerRef.current = setTimeout(() => { setToastMessage(null); toastTimerRef.current = null; }, 3000);
   };
   
   // Manipulation state
@@ -121,7 +180,6 @@ export default function App() {
     initialPointer: { x: 0, y: 0 },
     initialTranslates: new Map<string, Vector2>(),
     initialScales: new Map<string, number>(),
-    initialRotations: new Map<string, number>(),
     isGrabbing: false,
     isScaling: false,
     isRotating: false,
@@ -137,6 +195,16 @@ export default function App() {
         drawingCanvasRef.current.width = window.innerWidth;
         drawingCanvasRef.current.height = window.innerHeight;
       }
+      // Resize the offscreen canvas to match
+      if (offscreenCanvasRef.current) {
+        offscreenCanvasRef.current.width = window.innerWidth;
+        offscreenCanvasRef.current.height = window.innerHeight;
+      }
+      invalidateCache();
+    }
+    // Create the offscreen canvas once
+    if (!offscreenCanvasRef.current) {
+      offscreenCanvasRef.current = document.createElement('canvas');
     }
     window.addEventListener('resize', handleResize);
     handleResize();
@@ -151,9 +219,148 @@ export default function App() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // ─── Point decimation helper (Ramer-Douglas-Peucker) ─────────────
+    function perpendicularDistance(pt: Vector2, lineStart: Vector2, lineEnd: Vector2): number {
+      const dx = lineEnd.x - lineStart.x;
+      const dy = lineEnd.y - lineStart.y;
+      const mag = Math.hypot(dx, dy);
+      if (mag === 0) return Math.hypot(pt.x - lineStart.x, pt.y - lineStart.y);
+      return Math.abs(dx * (lineStart.y - pt.y) - dy * (lineStart.x - pt.x)) / mag;
+    }
+
+    function decimatePoints(points: Vector2[], epsilon: number): Vector2[] {
+      if (points.length <= 2) return points;
+      let maxDist = 0, maxIdx = 0;
+      for (let i = 1; i < points.length - 1; i++) {
+        const d = perpendicularDistance(points[i], points[0], points[points.length - 1]);
+        if (d > maxDist) { maxDist = d; maxIdx = i; }
+      }
+      if (maxDist > epsilon) {
+        const left = decimatePoints(points.slice(0, maxIdx + 1), epsilon);
+        const right = decimatePoints(points.slice(maxIdx), epsilon);
+        return left.slice(0, -1).concat(right);
+      }
+      return [points[0], points[points.length - 1]];
+    }
+
+    // ─── Render a single stroke to a given context ───────────────────
+    // themeSelColor is read inside render() so it updates with theme switches
+    let themeSelColor = '#8ff5ff';
+
+    function renderStroke(targetCtx: CanvasRenderingContext2D, stroke: Stroke, isSelected: boolean, isHovered: boolean) {
+      targetCtx.save();
+
+      if (stroke.points.length > 0) {
+        const { minX, minY, maxX, maxY } = stroke.bounds;
+        const cx = minX + (maxX - minX) / 2;
+        const cy = minY + (maxY - minY) / 2;
+
+        targetCtx.translate(cx + stroke.translate.x, cy + stroke.translate.y);
+        targetCtx.rotate((stroke.rotation * Math.PI) / 180);
+        targetCtx.scale(stroke.scale, stroke.scale);
+        targetCtx.translate(-cx, -cy);
+
+        // Hover glow
+        if (isHovered) {
+          targetCtx.save();
+          targetCtx.strokeStyle = 'rgba(255, 208, 0, 0.5)';
+          targetCtx.lineWidth = 1;
+          targetCtx.setLineDash([5, 4]);
+          targetCtx.shadowColor = 'rgba(255, 208, 0, 0.4)';
+          targetCtx.shadowBlur = 14;
+          targetCtx.strokeRect(minX - 12, minY - 12, (maxX - minX) + 24, (maxY - minY) + 24);
+          targetCtx.setLineDash([]);
+          targetCtx.shadowBlur = 0;
+          targetCtx.restore();
+        }
+
+        // Selection box — uses theme primary color
+        if (isSelected) {
+          targetCtx.save();
+          targetCtx.strokeStyle = themeSelColor;
+          targetCtx.globalAlpha = 0.85;
+          targetCtx.lineWidth = 1.5;
+          targetCtx.shadowColor = themeSelColor;
+          targetCtx.shadowBlur = 24;
+          targetCtx.strokeRect(minX - 10, minY - 10, (maxX - minX) + 20, (maxY - minY) + 20);
+          targetCtx.shadowBlur = 0;
+          targetCtx.globalAlpha = 0.9;
+          const corners: [number, number][] = [
+            [minX - 10, minY - 10], [maxX + 10, minY - 10],
+            [minX - 10, maxY + 10], [maxX + 10, maxY + 10]
+          ];
+          corners.forEach(([hx, hy]) => {
+            targetCtx.beginPath();
+            targetCtx.arc(hx, hy, 4, 0, Math.PI * 2);
+            targetCtx.fillStyle = themeSelColor;
+            targetCtx.shadowColor = themeSelColor;
+            targetCtx.shadowBlur = 8;
+            targetCtx.fill();
+            targetCtx.shadowBlur = 0;
+          });
+          targetCtx.globalAlpha = 1;
+          targetCtx.restore();
+        }
+      }
+
+      // Build the path
+      targetCtx.beginPath();
+      if (stroke.points.length > 0) {
+        targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+        if (stroke.points.length < 3) {
+          stroke.points.forEach((p, idx) => {
+            if (idx > 0) targetCtx.lineTo(p.x, p.y);
+          });
+        } else {
+          let i = 1;
+          for (; i < stroke.points.length - 2; i++) {
+            const xc = (stroke.points[i].x + stroke.points[i + 1].x) / 2;
+            const yc = (stroke.points[i].y + stroke.points[i + 1].y) / 2;
+            targetCtx.quadraticCurveTo(stroke.points[i].x, stroke.points[i].y, xc, yc);
+          }
+          targetCtx.quadraticCurveTo(
+            stroke.points[i].x, stroke.points[i].y,
+            stroke.points[i + 1].x, stroke.points[i + 1].y
+          );
+        }
+      }
+
+      targetCtx.lineCap = 'round';
+      targetCtx.lineJoin = 'round';
+
+      // Birth animation: ramp up opacity and width over first 500ms
+      const strokeAge = stroke.birthTime ? performance.now() - stroke.birthTime : Infinity;
+      const birthProgress = Math.min(1, strokeAge / 500);
+      const birthEase = birthProgress < 1 ? 0.3 + 0.7 * birthProgress * (2 - birthProgress) : 1;
+      const birthThickness = stroke.thickness * birthEase;
+
+      // 1. Outer ambient glow
+      targetCtx.strokeStyle = stroke.color;
+      targetCtx.lineWidth = birthThickness * 1.5;
+      targetCtx.shadowColor = stroke.color;
+      targetCtx.shadowBlur = 25 * birthEase;
+      targetCtx.globalAlpha = 0.5 * birthEase;
+      targetCtx.stroke();
+
+      // 2. Main neon body
+      targetCtx.lineWidth = birthThickness;
+      targetCtx.shadowBlur = 10 * birthEase;
+      targetCtx.globalAlpha = 0.8 * birthEase;
+      targetCtx.stroke();
+
+      // 3. Bright inner core
+      targetCtx.strokeStyle = '#ffffff';
+      targetCtx.lineWidth = birthThickness * 0.3;
+      targetCtx.shadowBlur = 2;
+      targetCtx.globalAlpha = birthEase;
+      targetCtx.stroke();
+
+      targetCtx.restore();
+    }
+
     function processGestures() {
       // Guard: don't process if no hands are being tracked yet and canvas is empty
-      if (handsRef.current.length === 0 && layersRef.current.every(l => l.strokes.length === 0)) return;
+      if (handsRef.current.length === 0 && visibleStrokesRef.current.length === 0) return;
       const liveHands = handsRef.current;
       const rightHand = liveHands.find(h => h.handedness === 'Right');
       const leftHand  = liveHands.find(h => h.handedness === 'Left');
@@ -179,20 +386,17 @@ export default function App() {
       let currentMode = 'Idle';
       let newActiveStrokeId = activeStrokeIdRef.current;
 
-      // Flat list of strokes across ALL visible layers (for hover/select search)
-      const allVisibleStrokes = layersRef.current.filter(l => l.visible).flatMap(l => l.strokes);
+      // Rebuild cached visible strokes + index only when dirty
+      if (visibleStrokesDirtyRef.current) rebuildStrokeIndex();
+      const allVisibleStrokes = visibleStrokesRef.current;
 
       // Find the active layer (where new strokes are created)
       const activeLayer = layersRef.current.find(l => l.id === activeLayerIdRef.current)
         ?? layersRef.current[layersRef.current.length - 1];
 
-      // Helper: find a stroke across ALL layers by ID
+      // O(1) stroke lookup via index Map
       function findStrokeById(id: string): Stroke | undefined {
-        for (const l of layersRef.current) {
-          const s = l.strokes.find(s => s.id === id);
-          if (s) return s;
-        }
-        return undefined;
+        return strokeIndexRef.current.get(id);
       }
 
       if (rightHand) {
@@ -206,36 +410,45 @@ export default function App() {
           selecting: rightHand.gesture === 'Pinch',
         };
 
-        // Hover detection (idle only) — search visible strokes
+        // Hover detection (idle only) — uses cached centroids
         if (rightHand.gesture === 'None') {
           let nearestId: string | null = null;
           let nearestDist = 180;
           for (const s of allVisibleStrokes) {
             if (s.points.length === 0) continue;
-            let cx = 0, cy = 0;
-            s.points.forEach(p => { cx += p.x; cy += p.y; });
-            cx = cx / s.points.length + s.translate.x;
-            cy = cy / s.points.length + s.translate.y;
-            const d = Math.hypot(cx - screenX, cy - screenY);
+            const d = Math.hypot(s.centroid.x + s.translate.x - screenX, s.centroid.y + s.translate.y - screenY);
             if (d < nearestDist) { nearestDist = d; nearestId = s.id; }
           }
           hoveredStrokeIdRef.current = nearestId;
         } else {
           hoveredStrokeIdRef.current = null;
         }
+        // Invalidate cache when hover target changes so outline renders/clears
+        if (hoveredStrokeIdRef.current !== prevHoveredIdRef.current) {
+          prevHoveredIdRef.current = hoveredStrokeIdRef.current;
+          invalidateCache();
+        }
 
         if (rightHand.gesture === 'IndexPoint') {
           currentMode = 'Draw';
           if (!activeLayer.locked) {
             if (!rightWasPointing.current) {
+              // Finalize previous stroke — bake it into cache
+              invalidateCache();
               const newStroke: Stroke = {
-                id: Date.now().toString(),
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
                 points: [{ x: screenX, y: screenY }],
                 color: brushColorRef.current,
                 thickness: brushThicknessRef.current,
-                scale: 1, rotation: 0, translate: { x: 0, y: 0 }
+                scale: 1, rotation: 0, translate: { x: 0, y: 0 },
+                centroid: { x: screenX, y: screenY },
+                bounds: { minX: screenX, minY: screenY, maxX: screenX, maxY: screenY },
+                birthTime: performance.now()
               };
+              penDownRippleRef.current = { x: screenX, y: screenY, time: performance.now() };
               activeLayer.strokes.push(newStroke);
+              // Add to index immediately so findStrokeById works this frame
+              strokeIndexRef.current.set(newStroke.id, newStroke);
               newActiveStrokeId = newStroke.id;
               rightWasPointing.current = true;
             } else {
@@ -245,11 +458,29 @@ export default function App() {
                 const prevPt = activeStroke.points[activeStroke.points.length - 1];
                 if (Math.hypot(prevPt.x - screenX, prevPt.y - screenY) > 1.5) {
                   activeStroke.points.push({ x: screenX, y: screenY });
+                  // Expand bounds live so renderStroke shows correct bounding box
+                  const b = activeStroke.bounds;
+                  if (screenX < b.minX) b.minX = screenX;
+                  if (screenY < b.minY) b.minY = screenY;
+                  if (screenX > b.maxX) b.maxX = screenX;
+                  if (screenY > b.maxY) b.maxY = screenY;
                 }
               }
             }
           }
         } else {
+          // When user lifts their index finger, decimate the just-finished stroke & cache centroid
+          if (rightWasPointing.current) {
+            const finishedStroke = findStrokeById(newActiveStrokeId ?? '');
+            if (finishedStroke) {
+              if (finishedStroke.points.length > 20) {
+                finishedStroke.points = decimatePoints(finishedStroke.points, 1.0);
+              }
+              finishedStroke.centroid = computeCentroid(finishedStroke.points);
+              finishedStroke.bounds = computeBounds(finishedStroke.points);
+            }
+            invalidateCache();
+          }
           rightWasPointing.current = false;
         }
 
@@ -259,6 +490,7 @@ export default function App() {
           if (activeLayer.strokes.length > 0) {
             activeLayer.strokes = [];
             newActiveStrokeId = null;
+            invalidateCache();
           }
         }
 
@@ -268,11 +500,7 @@ export default function App() {
           let nearestDist = 220;
           for (const s of allVisibleStrokes) {
             if (s.points.length === 0) continue;
-            let cx = 0, cy = 0;
-            s.points.forEach(p => { cx += p.x; cy += p.y; });
-            cx = cx / s.points.length + s.translate.x;
-            cy = cy / s.points.length + s.translate.y;
-            const d = Math.hypot(cx - screenX, cy - screenY);
+            const d = Math.hypot(s.centroid.x + s.translate.x - screenX, s.centroid.y + s.translate.y - screenY);
             if (d < nearestDist) { nearestDist = d; nearestId = s.id; }
           }
           if (nearestId && nearestId !== newActiveStrokeId) {
@@ -320,8 +548,12 @@ export default function App() {
                 s.translate.y = init.y + dy;
               }
             });
+            invalidateCache();
           }
-        } else { state.isGrabbing = false; }
+        } else {
+          if (state.isGrabbing) { state.initialTranslates.clear(); }
+          state.isGrabbing = false;
+        }
 
         if (leftHand.gesture === 'Pinch') {
           currentMode = 'Scale';
@@ -337,8 +569,12 @@ export default function App() {
               const init = state.initialScales.get(s.id) || 1;
               s.scale = Math.max(0.05, Math.min(12, init * scaleFactor));
             });
+            invalidateCache();
           }
-        } else { state.isScaling = false; }
+        } else {
+          if (state.isScaling) { state.initialScales.clear(); }
+          state.isScaling = false;
+        }
 
         if (leftHand.gesture === 'OpenPalm') {
           currentMode = 'Rotate';
@@ -347,11 +583,19 @@ export default function App() {
           const angle = Math.atan2(indexTip.y - wrist.y, mirrorIndexX - mirrorWristX) * (180 / Math.PI);
           const snappedAngle = Math.round(angle / 45) * 45;
           targetStrokes.forEach(s => { s.rotation = snappedAngle; });
+          invalidateCache();
         }
       } else if (leftHand) {
         leftHandState.current.isGrabbing = false;
         leftHandState.current.isScaling = false;
         leftHandState.current.isRotating = false;
+      } else {
+        // No left hand visible — fully reset manipulation state to prevent stale grabs
+        leftHandState.current.isGrabbing = false;
+        leftHandState.current.isScaling = false;
+        leftHandState.current.isRotating = false;
+        leftHandState.current.initialTranslates.clear();
+        leftHandState.current.initialScales.clear();
       }
 
       // strokesChanged flag is used for dirty tracking; writing back to layersRef is done in-place above
@@ -365,16 +609,37 @@ export default function App() {
       // Process gestures here — same frame as drawing, no React cycle
       processGestures();
 
+      // Re-read theme color only when cache rebuilds (selection boxes are drawn there)
+      if (cacheInvalidRef.current) {
+        themeSelColor = getComputedStyle(document.documentElement).getPropertyValue('--color-primary').trim() || '#8ff5ff';
+      }
+
       const pCurrent = currentParallaxRef.current;
       const pTarget = targetParallaxRef.current;
       pCurrent.x += (pTarget.x - pCurrent.x) * 0.06;
       pCurrent.y += (pTarget.y - pCurrent.y) * 0.06;
-      canvas!.style.transform = `rotateX(${-pCurrent.y}deg) rotateY(${pCurrent.x}deg) scale(1.02)`;
+      // Only update DOM transform when parallax changes visibly (>0.01 deg)
+      const lastP = lastAppliedParallaxRef.current;
+      if (Math.abs(pCurrent.x - lastP.x) > 0.01 || Math.abs(pCurrent.y - lastP.y) > 0.01) {
+        canvas!.style.transform = `rotateX(${-pCurrent.y}deg) rotateY(${pCurrent.x}deg) scale(1.02)`;
+        lastP.x = pCurrent.x;
+        lastP.y = pCurrent.y;
+      }
 
       ctx!.clearRect(0, 0, canvas!.width, canvas!.height);
       
       const currentActiveId = activeStrokeIdRef.current;
       const t = globalTransformRef.current;
+
+      // ─── Build transform key to detect view changes ────────────────
+      const transformKey = `${t.scale}_${t.rotation}`;
+      if (transformKey !== prevTransformKeyRef.current) {
+        prevTransformKeyRef.current = transformKey;
+        cacheInvalidRef.current = true;
+      }
+
+      // ─── Collect all visible strokes, separate active from completed ─
+      const activeDrawingId = rightWasPointing.current ? currentActiveId : null;
       
       ctx!.save();
       
@@ -385,126 +650,58 @@ export default function App() {
       ctx!.rotate((t.rotation * Math.PI) / 180);
       ctx!.scale(t.scale, t.scale);
       ctx!.translate(-cw, -ch);
-      
-      // Render all visible layers bottom-to-top
-      layersRef.current.filter(l => l.visible).forEach(layer => {
-      layer.strokes.forEach((stroke) => {
-        const isSelected = selectAllModeRef.current || stroke.id === currentActiveId;
-        const isHovered = !selectAllModeRef.current && stroke.id === hoveredStrokeIdRef.current && !isSelected;
-        
-        ctx!.save();
-        
-        // Calculate bounding box + centroid for transforms
-        if (stroke.points.length > 0) {
-           let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-           stroke.points.forEach(p => {
-             if (p.x < minX) minX = p.x;
-             if (p.y < minY) minY = p.y;
-             if (p.x > maxX) maxX = p.x;
-             if (p.y > maxY) maxY = p.y;
-           });
-           const cx = minX + (maxX - minX)/2;
-           const cy = minY + (maxY - minY)/2;
 
-           ctx!.translate(cx + stroke.translate.x, cy + stroke.translate.y);
-           ctx!.rotate((stroke.rotation * Math.PI) / 180);
-           ctx!.scale(stroke.scale, stroke.scale);
-           ctx!.translate(-cx, -cy);
+      // ─── Rebuild offscreen cache if dirty ──────────────────────────
+      const offscreen = offscreenCanvasRef.current;
+      if (offscreen && cacheInvalidRef.current) {
+        const oCtx = offscreen.getContext('2d');
+        if (oCtx) {
+          oCtx.clearRect(0, 0, offscreen.width, offscreen.height);
+          oCtx.save();
+          // Apply same global transform to offscreen
+          oCtx.translate(cw, ch);
+          oCtx.rotate((t.rotation * Math.PI) / 180);
+          oCtx.scale(t.scale, t.scale);
+          oCtx.translate(-cw, -ch);
 
-           // Hover glow: dashed gold outline
-           if (isHovered) {
-             ctx!.save();
-             ctx!.strokeStyle = 'rgba(255, 208, 0, 0.5)';
-             ctx!.lineWidth = 1;
-             ctx!.setLineDash([5, 4]);
-             ctx!.shadowColor = 'rgba(255, 208, 0, 0.4)';
-             ctx!.shadowBlur = 14;
-             ctx!.strokeRect(minX - 12, minY - 12, (maxX - minX) + 24, (maxY - minY) + 24);
-             ctx!.setLineDash([]);
-             ctx!.shadowBlur = 0;
-             ctx!.restore();
-           }
-
-           // Selection box: bright cyan, solid
-           if (isSelected) {
-             ctx!.save();
-             ctx!.strokeStyle = 'rgba(143, 245, 255, 0.85)';
-             ctx!.lineWidth = 1.5;
-             ctx!.shadowColor = 'rgba(143, 245, 255, 0.5)';
-             ctx!.shadowBlur = 24;
-             ctx!.strokeRect(minX - 10, minY - 10, (maxX - minX) + 20, (maxY - minY) + 20);
-             ctx!.shadowBlur = 0;
-             // Corner handle dots
-             const corners: [number, number][] = [
-               [minX - 10, minY - 10], [maxX + 10, minY - 10],
-               [minX - 10, maxY + 10], [maxX + 10, maxY + 10]
-             ];
-             corners.forEach(([hx, hy]) => {
-               ctx!.beginPath();
-               ctx!.arc(hx, hy, 4, 0, Math.PI * 2);
-               ctx!.fillStyle = 'rgba(143, 245, 255, 0.9)';
-               ctx!.shadowColor = '#8ff5ff';
-               ctx!.shadowBlur = 8;
-               ctx!.fill();
-               ctx!.shadowBlur = 0;
-             });
-             ctx!.restore();
-           }
-        }
-
-        ctx!.beginPath();
-        if (stroke.points.length > 0) {
-          ctx!.moveTo(stroke.points[0].x, stroke.points[0].y);
-          if (stroke.points.length < 3) {
-            stroke.points.forEach((p, idx) => {
-              if (idx > 0) ctx!.lineTo(p.x, p.y);
+          layersRef.current.filter(l => l.visible).forEach(layer => {
+            layer.strokes.forEach(stroke => {
+              // Skip the actively-being-drawn stroke; it will be drawn live
+              if (stroke.id === activeDrawingId) return;
+              const isSelected = selectAllModeRef.current || stroke.id === currentActiveId;
+              const isHovered = !selectAllModeRef.current && stroke.id === hoveredStrokeIdRef.current && !isSelected;
+              renderStroke(oCtx, stroke, isSelected, isHovered);
             });
-          } else {
-            let i = 1;
-            for (; i < stroke.points.length - 2; i++) {
-              const xc = (stroke.points[i].x + stroke.points[i + 1].x) / 2;
-              const yc = (stroke.points[i].y + stroke.points[i + 1].y) / 2;
-              ctx!.quadraticCurveTo(stroke.points[i].x, stroke.points[i].y, xc, yc);
-            }
-            // Draw the final curve through the last two points
-            ctx!.quadraticCurveTo(
-              stroke.points[i].x,
-              stroke.points[i].y,
-              stroke.points[i + 1].x,
-              stroke.points[i + 1].y
-            );
-          }
+          });
+          oCtx.restore();
         }
-        
-        ctx!.lineCap = 'round';
-        ctx!.lineJoin = 'round';
-        
-        // 1. Outer ambient glow
-        ctx!.strokeStyle = stroke.color;
-        ctx!.lineWidth = stroke.thickness * 1.5;
-        ctx!.shadowColor = stroke.color;
-        ctx!.shadowBlur = 25;
-        ctx!.globalAlpha = 0.5;
-        ctx!.stroke();
-        
-        // 2. Main neon body
-        ctx!.lineWidth = stroke.thickness;
-        ctx!.shadowBlur = 10;
-        ctx!.globalAlpha = 0.8;
-        ctx!.stroke();
+        cacheInvalidRef.current = false;
+      }
 
-        // 3. Bright inner core
-        ctx!.strokeStyle = '#ffffff';
-        ctx!.lineWidth = stroke.thickness * 0.3;
-        ctx!.shadowBlur = 2;
-        ctx!.globalAlpha = 1.0;
-        ctx!.stroke();
-        
+      // ─── Draw the cached bitmap (completed strokes) ────────────────
+      ctx!.restore(); // restore global transform temporarily to draw image at screen coords
+      if (offscreen) {
+        ctx!.drawImage(offscreen, 0, 0);
+      }
+
+      // ─── Draw the active in-progress stroke live ───────────────────
+      if (activeDrawingId) {
+        ctx!.save();
+        ctx!.translate(cw, ch);
+        ctx!.rotate((t.rotation * Math.PI) / 180);
+        ctx!.scale(t.scale, t.scale);
+        ctx!.translate(-cw, -ch);
+
+        // Find the active stroke via O(1) Map lookup
+        const activeStroke = strokeIndexRef.current.get(activeDrawingId);
+        if (activeStroke) {
+          const isSelected = selectAllModeRef.current || activeStroke.id === currentActiveId;
+          renderStroke(ctx!, activeStroke, isSelected, false);
+        }
         ctx!.restore();
-      });  // end layer.strokes.forEach
-      }); // end layersRef.current.filter.forEach
+      }
 
-      ctx!.restore(); // restore global view transform
+      // (global transform already restored above via ctx!.restore())
 
       // Draw cursor AFTER restoring global transform so it's always in screen space
       const cursor = cursorRef.current;
@@ -544,6 +741,36 @@ export default function App() {
         }
         ctx!.shadowBlur = 0;
         ctx!.restore();
+      }
+
+      // Pen-down ripple effect
+      const ripple = penDownRippleRef.current;
+      if (ripple) {
+        const rippleAge = performance.now() - ripple.time;
+        const rippleDuration = 600;
+        if (rippleAge < rippleDuration) {
+          const progress = rippleAge / rippleDuration;
+          const eased = progress * (2 - progress);
+          const radius = 4 + eased * 35;
+          const opacity = (1 - eased) * 0.7;
+          ctx!.save();
+          ctx!.beginPath();
+          ctx!.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
+          ctx!.strokeStyle = brushColorRef.current;
+          ctx!.lineWidth = 2 * (1 - progress);
+          ctx!.globalAlpha = opacity;
+          ctx!.shadowColor = brushColorRef.current;
+          ctx!.shadowBlur = 20 * (1 - progress);
+          ctx!.stroke();
+          ctx!.beginPath();
+          ctx!.arc(ripple.x, ripple.y, radius * 0.5, 0, Math.PI * 2);
+          ctx!.lineWidth = 1;
+          ctx!.globalAlpha = opacity * 0.5;
+          ctx!.stroke();
+          ctx!.restore();
+        } else {
+          penDownRippleRef.current = null;
+        }
       }
 
       animId = requestAnimationFrame(render);
@@ -608,8 +835,10 @@ export default function App() {
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Depth</span>
           </div>
           <div onClick={() => {
-            if (drawingCanvasRef.current) {
-              const url = drawingCanvasRef.current.toDataURL('image/png');
+            // Export from offscreen cache to avoid capturing a blank mid-frame canvas
+            const exportCanvas = offscreenCanvasRef.current ?? drawingCanvasRef.current;
+            if (exportCanvas) {
+              const url = exportCanvas.toDataURL('image/png');
               const a = document.createElement('a');
               a.href = url;
               a.download = 'kinetic-singularity-export.png';
@@ -627,6 +856,7 @@ export default function App() {
             layersRef.current.forEach(l => { l.strokes = []; });
             activeStrokeIdRef.current = null;
             globalTransformRef.current = { scale: 1, rotation: 0 };
+            invalidateCache();
             syncLayersState(); // reflect cleared stroke counts in UI
           }} className="w-full py-2 bg-primary/10 border border-primary/30 text-primary text-[10px] font-bold space-grotesk tracking-widest hover:bg-primary hover:text-on-primary active:bg-primary active:text-on-primary transition-all">
               CALIBRATE
@@ -676,13 +906,8 @@ export default function App() {
           <div className="h-4"></div>
           <button onClick={() => {
             selectAllModeRef.current = !selectAllModeRef.current;
+            invalidateCache();
             showToast(selectAllModeRef.current ? 'Selected all strokes' : 'Deselected all strokes');
-            // Force a re-render by touching activeStrokeIdRef so the rendering picks up the cyan boxes
-            if (activeStrokeIdRef.current) {
-              const old = activeStrokeIdRef.current;
-              activeStrokeIdRef.current = null;
-              setTimeout(() => { activeStrokeIdRef.current = old; }, 0);
-            }
           }} className={`w-12 h-12 glass-panel flex items-center justify-center transition-all group ${selectAllModeRef.current ? 'text-primary border-primary/40 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'text-on-surface-variant border-white/10'}`}>
             <span className="material-symbols-outlined group-active:scale-90 transition-transform">select_all</span>
           </button>
@@ -690,6 +915,7 @@ export default function App() {
             // Delete all strokes in ALL layers, keeping layers themselves
             layersRef.current.forEach(l => { l.strokes = []; });
             activeStrokeIdRef.current = null;
+            invalidateCache();
             syncLayersState(); // reflect cleared stroke counts in UI
           }} className="w-12 h-12 glass-panel flex items-center justify-center text-error border-error/20 hover:bg-error/10 transition-all active:bg-error/30">
             <span className="material-symbols-outlined">delete</span>
@@ -711,22 +937,27 @@ export default function App() {
                 <span className="text-[10px] font-label text-on-surface uppercase tracking-widest">{isReady ? 'Live Feed' : 'Initializing'}</span>
               </div>
             </div>
-            {(hands.length > 0) && (
-              <div className="flex gap-2 opacity-80">
-                {hands.find(h => h.handedness === 'Left') && (
-                  <div className="flex-1 bg-secondary/20 border border-secondary/40 p-1 flex flex-col items-center">
-                    <span className="material-symbols-outlined text-secondary text-sm">front_hand</span>
-                    <span className="text-[8px] font-label text-secondary uppercase mt-1">Left ({hands.find(h => h.handedness === 'Left')?.gesture})</span>
-                  </div>
-                )}
-                {hands.find(h => h.handedness === 'Right') && (
-                  <div className="flex-1 bg-primary/20 border border-primary/40 p-1 flex flex-col items-center">
-                    <span className="material-symbols-outlined text-primary text-sm">front_hand</span>
-                    <span className="text-[8px] font-label text-primary uppercase mt-1">Right ({hands.find(h => h.handedness === 'Right')?.gesture})</span>
-                  </div>
-                )}
-              </div>
-            )}
+            {(() => {
+              const leftHand = hands.find(h => h.handedness === 'Left');
+              const rightHand = hands.find(h => h.handedness === 'Right');
+              if (!leftHand && !rightHand) return null;
+              return (
+                <div className="flex gap-2 opacity-80">
+                  {leftHand && (
+                    <div className="flex-1 bg-secondary/20 border border-secondary/40 p-1 flex flex-col items-center">
+                      <span className="material-symbols-outlined text-secondary text-sm">front_hand</span>
+                      <span className="text-[8px] font-label text-secondary uppercase mt-1">Left ({leftHand.gesture})</span>
+                    </div>
+                  )}
+                  {rightHand && (
+                    <div className="flex-1 bg-primary/20 border border-primary/40 p-1 flex flex-col items-center">
+                      <span className="material-symbols-outlined text-primary text-sm">front_hand</span>
+                      <span className="text-[8px] font-label text-primary uppercase mt-1">Right ({rightHand.gesture})</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
           <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_2px,3px_100%]"></div>
         </div>
@@ -742,7 +973,7 @@ export default function App() {
         {/* Dynamic Modals & Overlays */}
         {activeModal === 'Settings' && (() => {
           // Local draft state so changes only apply on "Apply"
-          let draftQuality = trackingQualityRef.current;
+          let draftQuality = 'balanced';
           let draftTheme: ThemeId = activeTheme;
           let draftSmoothing = 50;
           return (
@@ -757,7 +988,7 @@ export default function App() {
                         <span className="text-[10px] text-white/30">Hand detection performance mode</span>
                       </div>
                       <select
-                        defaultValue={trackingQualityRef.current}
+                        defaultValue={'balanced'}
                         onChange={(e) => { draftQuality = e.target.value as typeof draftQuality; }}
                         className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded px-2 py-1 text-xs"
                       >
@@ -798,7 +1029,8 @@ export default function App() {
                  </div>
                  <button
                    onClick={() => {
-                     trackingQualityRef.current = draftQuality;
+                     // trackingQuality: no runtime effect yet
+                     void draftQuality;
                      applyTheme(draftTheme);
                      // Update smoothing slider label
                      const el = document.getElementById('smoothing-val');

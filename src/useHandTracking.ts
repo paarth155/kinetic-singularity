@@ -112,10 +112,10 @@ export function useHandTracking(
 
     const lostHandFrames: Record<string, number> = { Left: 0, Right: 0 };
 
-    // Start webcam at maximum available resolution
+    // 640×480 is sufficient for hand landmark detection and saves ~5× processing vs 1080p
     const streamRef = { current: null as MediaStream | null };
     navigator.mediaDevices
-      .getUserMedia({ video: { width: { ideal: 1920 }, height: { ideal: 1080 } } })
+      .getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } } })
       .then((stream) => {
         streamRef.current = stream;
         video.srcObject = stream;
@@ -239,16 +239,17 @@ export function useHandTracking(
         if (!prev) return lm;
 
         const aspect = getAspect();
-        const dx    = (lm.x - prev.x) * aspect;
-        const dy    = lm.y - prev.y;
-        const speed = Math.hypot(dx, dy); // normalised [0..~0.1]
+        const rawDx = lm.x - prev.x;
+        const rawDy = lm.y - prev.y;
+        // Use aspect-corrected deltas ONLY for velocity calculation, not position update
+        const speed = Math.hypot(rawDx * aspect, rawDy); // normalised [0..~0.1]
 
         // Remap speed to alpha: still→0.18 (heavy smoothing), fast→0.80 (very responsive)
         const alpha = Math.min(0.80, Math.max(0.18, speed * 18.0));
 
         return {
-          x: prev.x + alpha * dx,
-          y: prev.y + alpha * dy,
+          x: prev.x + alpha * rawDx,
+          y: prev.y + alpha * rawDy,
           z: prev.z + alpha * (lm.z - prev.z),
           visibility: lm.visibility,
         };
@@ -272,10 +273,12 @@ export function useHandTracking(
       const ctx = hudCanvas.getContext('2d');
       if (!ctx) return;
 
-      // Match canvas resolution to video
+      // Match canvas resolution to video — recreate DrawingUtils if canvas resized
       if (hudCanvas.width !== video.videoWidth || hudCanvas.height !== video.videoHeight) {
         hudCanvas.width  = video.videoWidth;
         hudCanvas.height = video.videoHeight;
+        // Context changes on resize, DrawingUtils holds stale ref — recreate
+        drawingUtilsRef.current = new DrawingUtils(ctx);
       }
       ctx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
 
