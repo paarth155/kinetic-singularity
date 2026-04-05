@@ -337,96 +337,101 @@ export function useHandTracking(
     // ── Main Prediction Loop ─────────────────────────────────────────────────
 
     function predictWebcam() {
-      if (video.currentTime !== lastVideoTime && landmarkerRef.current) {
-        const t0 = performance.now();
-        lastVideoTime = video.currentTime;
-        const results = landmarkerRef.current.detectForVideo(video, t0);
+      try {
+        if (video.currentTime !== lastVideoTime && landmarkerRef.current) {
+          const t0 = performance.now();
+          lastVideoTime = video.currentTime;
+          const results = landmarkerRef.current.detectForVideo(video, t0);
 
-        // Track which hands appeared this frame so we can clear stale ones
-        const activeHands = new Set<string>();
+          // Track which hands appeared this frame so we can clear stale ones
+          const activeHands = new Set<string>();
 
-        if (results?.landmarks?.length) {
-          const smoothedByHand: Record<string, Landmark[]>  = {};
-          const gestureByHand:  Record<string, Gesture>     = {};
+          if (results?.landmarks?.length) {
+            const smoothedByHand: Record<string, Landmark[]>  = {};
+            const gestureByHand:  Record<string, Gesture>     = {};
 
-          const newHands: HandState[] = results.landmarks.map((rawLm, i) => {
-            const rawLabel = results.handednesses[i][0].categoryName;
-            // Persist handedness per slot to survive 1-2 frame misclassifications
-            const stableLabel = getStableHandedness(i, rawLabel);
-            // Mirror: MediaPipe 'Right' in the flipped webcam image = user's Left hand
-            const hand   = stableLabel === 'Right' ? 'Left' : 'Right';
-            activeHands.add(hand);
+            const newHands: HandState[] = results.landmarks.map((rawLm, i) => {
+              // Defensive access: MediaPipe sometimes drops handedness data even when landmarks are found
+              const rawLabel = results.handednesses?.[i]?.[0]?.categoryName || 'Right';
+              // Persist handedness per slot to survive 1-2 frame misclassifications
+              const stableLabel = getStableHandedness(i, rawLabel);
+              // Mirror: MediaPipe 'Right' in the flipped webcam image = user's Left hand
+              const hand   = stableLabel === 'Right' ? 'Left' : 'Right';
+              activeHands.add(hand);
 
-            // Apply velocity-adaptive EMA smoothing
-            const prev    = smoothed[hand] ?? rawLm;
-            const lm      = smoothLandmarks(rawLm, prev);
-            smoothed[hand] = lm;
+              // Apply velocity-adaptive EMA smoothing
+              const prev    = smoothed[hand] ?? rawLm;
+              const lm      = smoothLandmarks(rawLm, prev);
+              smoothed[hand] = lm;
 
-            // Detect + debounce gesture
-            const { gesture: rawGesture, pinchRatio } = detectGesture(lm, hand);
-            const stableGesture = stabiliseGesture(rawGesture, gestureHistory[hand]);
+              // Detect + debounce gesture
+              const { gesture: rawGesture, pinchRatio } = detectGesture(lm, hand);
+              const stableGesture = stabiliseGesture(rawGesture, gestureHistory[hand]);
 
-            smoothedByHand[hand] = lm;
-            gestureByHand[hand]  = stableGesture;
+              smoothedByHand[hand] = lm;
+              gestureByHand[hand]  = stableGesture;
 
-            return {
-              landmarks:  lm,
-              handedness: hand as 'Left' | 'Right',
-              gesture:    stableGesture,
-              pinchRatio,
-            };
-          });
+              return {
+                landmarks:  lm,
+                handedness: hand as 'Left' | 'Right',
+                gesture:    stableGesture,
+                pinchRatio,
+              };
+            });
 
-          // Clear smoothed + history for hands that left the frame
-          for (const hand of ['Left', 'Right']) {
-            if (!activeHands.has(hand)) {
+            // Clear smoothed + history for hands that left the frame
+            for (const hand of ['Left', 'Right']) {
+              if (!activeHands.has(hand)) {
+                delete smoothed[hand];
+                pinchActive[hand]    = false;
+                gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0 };
+              }
+            }
+
+            handsRef.current = newHands; // sync ref immediately — zero React overhead
+            drawHUD(smoothedByHand, gestureByHand);
+          } else {
+            // No hands visible → reset everything
+            for (const hand of ['Left', 'Right']) {
               delete smoothed[hand];
               pinchActive[hand]    = false;
               gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0 };
             }
+            // Reset slot history too
+            slotHandedness[0] = { label: '', count: 0, locked: '' };
+            slotHandedness[1] = { label: '', count: 0, locked: '' };
+            // Clear HUD
+            const hudCanvas = canvasRef.current;
+            if (hudCanvas) {
+              const ctx = hudCanvas.getContext('2d');
+              ctx?.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
+            }
+            handsRef.current = [];
           }
 
-          handsRef.current = newHands; // sync ref immediately — zero React overhead
-          drawHUD(smoothedByHand, gestureByHand);
-        } else {
-          // No hands visible → reset everything
-          for (const hand of ['Left', 'Right']) {
-            delete smoothed[hand];
-            pinchActive[hand]    = false;
-            gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0 };
+          // ── Latency: EMA-smooth and update display at 2fps (decorative number, no need to flicker) ──
+          const elapsed = performance.now() - t0;
+          emaLatencyRef.current = emaLatencyRef.current === 0
+            ? elapsed
+            : emaLatencyRef.current * 0.85 + elapsed * 0.15;
+          const now = performance.now();
+          if (now - lastLatencyUpdateRef.current > LATENCY_DISPLAY_INTERVAL_MS) {
+            lastLatencyUpdateRef.current = now;
+            setLatency(Math.round(emaLatencyRef.current));
           }
-          // Reset slot history too
-          slotHandedness[0] = { label: '', count: 0, locked: '' };
-          slotHandedness[1] = { label: '', count: 0, locked: '' };
-          // Clear HUD
-          const hudCanvas = canvasRef.current;
-          if (hudCanvas) {
-            const ctx = hudCanvas.getContext('2d');
-            ctx?.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
-          }
-          handsRef.current = [];
         }
 
-        // ── Latency: EMA-smooth and update display at 2fps (decorative number, no need to flicker) ──
-        const elapsed = performance.now() - t0;
-        emaLatencyRef.current = emaLatencyRef.current === 0
-          ? elapsed
-          : emaLatencyRef.current * 0.85 + elapsed * 0.15;
-        const now = performance.now();
-        if (now - lastLatencyUpdateRef.current > LATENCY_DISPLAY_INTERVAL_MS) {
-          lastLatencyUpdateRef.current = now;
-          setLatency(Math.round(emaLatencyRef.current));
+        // ── Throttled hands display update for JSX overlay (~8fps max) ──
+        const nowDisplay = performance.now();
+        if (nowDisplay - lastHandsDisplayUpdateRef.current > HANDS_DISPLAY_INTERVAL_MS) {
+          lastHandsDisplayUpdateRef.current = nowDisplay;
+          setHandsDisplay([...handsRef.current]);
         }
+      } catch (err) {
+        console.error("MediaPipe detection loop error:", err);
+      } finally {
+        requestRef.current = requestAnimationFrame(predictWebcam);
       }
-
-      // ── Throttled hands display update for JSX overlay (~8fps max) ──
-      const nowDisplay = performance.now();
-      if (nowDisplay - lastHandsDisplayUpdateRef.current > HANDS_DISPLAY_INTERVAL_MS) {
-        lastHandsDisplayUpdateRef.current = nowDisplay;
-        setHandsDisplay([...handsRef.current]);
-      }
-
-      requestRef.current = requestAnimationFrame(predictWebcam);
     }
 
     return () => {
