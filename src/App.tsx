@@ -409,17 +409,51 @@ export default function App() {
         }
 
         ctx!.beginPath();
-        stroke.points.forEach((p, idx) => {
-          if (idx === 0) ctx!.moveTo(p.x, p.y);
-          else ctx!.lineTo(p.x, p.y);
-        });
+        if (stroke.points.length > 0) {
+          ctx!.moveTo(stroke.points[0].x, stroke.points[0].y);
+          if (stroke.points.length < 3) {
+            stroke.points.forEach((p, idx) => {
+              if (idx > 0) ctx!.lineTo(p.x, p.y);
+            });
+          } else {
+            let i = 1;
+            for (; i < stroke.points.length - 2; i++) {
+              const xc = (stroke.points[i].x + stroke.points[i + 1].x) / 2;
+              const yc = (stroke.points[i].y + stroke.points[i + 1].y) / 2;
+              ctx!.quadraticCurveTo(stroke.points[i].x, stroke.points[i].y, xc, yc);
+            }
+            // Draw the final curve through the last two points
+            ctx!.quadraticCurveTo(
+              stroke.points[i].x,
+              stroke.points[i].y,
+              stroke.points[i + 1].x,
+              stroke.points[i + 1].y
+            );
+          }
+        }
         
-        ctx!.strokeStyle = stroke.color;
-        ctx!.lineWidth = stroke.thickness;
         ctx!.lineCap = 'round';
         ctx!.lineJoin = 'round';
+        
+        // 1. Outer ambient glow
+        ctx!.strokeStyle = stroke.color;
+        ctx!.lineWidth = stroke.thickness * 1.5;
         ctx!.shadowColor = stroke.color;
-        ctx!.shadowBlur = 15;
+        ctx!.shadowBlur = 25;
+        ctx!.globalAlpha = 0.5;
+        ctx!.stroke();
+        
+        // 2. Main neon body
+        ctx!.lineWidth = stroke.thickness;
+        ctx!.shadowBlur = 10;
+        ctx!.globalAlpha = 0.8;
+        ctx!.stroke();
+
+        // 3. Bright inner core
+        ctx!.strokeStyle = '#ffffff';
+        ctx!.lineWidth = stroke.thickness * 0.3;
+        ctx!.shadowBlur = 2;
+        ctx!.globalAlpha = 1.0;
         ctx!.stroke();
         
         ctx!.restore();
