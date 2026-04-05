@@ -72,7 +72,6 @@ export default function App() {
 
   const activeStrokeIdRef = useRef<string | null>(null);
   const selectAllModeRef = useRef<boolean>(false);
-  const autoSnapRef = useRef<boolean>(false);
   const modeRef = useRef<HTMLSpanElement>(null);
   
   const brushColorRef = useRef<string>('#8ff5ff');
@@ -90,7 +89,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('Draw');
   const [activeModal, setActiveModal] = useState<string | null>(null);
   const [activeSidebarPanel, setActiveSidebarPanel] = useState<string | null>(null);
-  const [autoSnapUI, setAutoSnapUI] = useState<boolean>(false);
 
   // ─── Theme ───────────────────────────────────────────────────────────────────
   type ThemeId = 'holo-blue' | 'crimson';
@@ -197,84 +195,6 @@ export default function App() {
         return undefined;
       }
 
-      function snapToShape(stroke: Stroke) {
-        if (stroke.points.length < 10) return;
-        
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        stroke.points.forEach(p => {
-          if (p.x < minX) minX = p.x;
-          if (p.x > maxX) maxX = p.x;
-          if (p.y < minY) minY = p.y;
-          if (p.y > maxY) maxY = p.y;
-        });
-        const w = maxX - minX;
-        const h = maxY - minY;
-        const diag = Math.hypot(w, h);
-        if (diag < 20) return;
-        
-        const start = stroke.points[0];
-        const end = stroke.points[stroke.points.length - 1];
-        const startEndDist = Math.hypot(end.x - start.x, end.y - start.y);
-
-        // Circle detection
-        if (startEndDist < diag * 0.5) { // Loosened start/end gap for unclosed circles
-          let cx = 0, cy = 0;
-          stroke.points.forEach(p => { cx += p.x; cy += p.y; });
-          cx /= stroke.points.length;
-          cy /= stroke.points.length;
-          
-          let avgRadii = 0;
-          stroke.points.forEach(p => { avgRadii += Math.hypot(p.x - cx, p.y - cy); });
-          avgRadii /= stroke.points.length;
-          
-          let sumVariance = 0;
-          stroke.points.forEach(p => {
-            const r = Math.hypot(p.x - cx, p.y - cy);
-            sumVariance += Math.abs(r - avgRadii);
-          });
-          const meanVariance = sumVariance / stroke.points.length;
-          
-          if (meanVariance < avgRadii * 0.25) { // Average deviation is <25% of radius
-            const newPoints = [];
-            const steps = 36;
-            for (let i = 0; i <= steps; i++) {
-              const angle = (i / steps) * Math.PI * 2;
-              newPoints.push({ x: cx + Math.cos(angle) * avgRadii, y: cy + Math.sin(angle) * avgRadii });
-            }
-            stroke.points = newPoints;
-            showToast('Snapped to Circle');
-            return;
-          }
-        }
-        
-        // Line detection
-        if (startEndDist > diag * 0.7) { // Can be a line even if a bit wiggly
-          let sumDist = 0;
-          const denom = Math.hypot(end.y - start.y, end.x - start.x);
-          if (denom === 0) return;
-          
-          stroke.points.forEach(p => {
-            const num = Math.abs((end.y - start.y) * p.x - (end.x - start.x) * p.y + end.x * start.y - end.y * start.x);
-            sumDist += num / denom;
-          });
-          const meanDist = sumDist / stroke.points.length;
-          
-          if (meanDist < diag * 0.08) { // Average distance to line is very small
-            const newPoints = [];
-            const steps = 10;
-            for (let i = 0; i <= steps; i++) {
-              newPoints.push({
-                x: start.x + (end.x - start.x) * (i / steps),
-                y: start.y + (end.y - start.y) * (i / steps)
-              });
-            }
-            stroke.points = newPoints;
-            showToast('Snapped to Line');
-            return;
-          }
-        }
-      }
-
       if (rightHand) {
         const indexTip = rightHand.landmarks[8];
         const screenX = (1 - indexTip.x) * canvas!.width;
@@ -330,10 +250,6 @@ export default function App() {
             }
           }
         } else {
-          if (rightWasPointing.current && autoSnapRef.current && newActiveStrokeId) {
-            const finishedStroke = findStrokeById(newActiveStrokeId);
-            if (finishedStroke) snapToShape(finishedStroke);
-          }
           rightWasPointing.current = false;
         }
 
@@ -758,13 +674,6 @@ export default function App() {
             <span className="material-symbols-outlined">straighten</span>
           </button>
           <div className="h-4"></div>
-          <button onClick={() => {
-            autoSnapRef.current = !autoSnapRef.current;
-            setAutoSnapUI(autoSnapRef.current);
-            showToast(autoSnapRef.current ? 'Auto-Snap ON' : 'Auto-Snap OFF');
-          }} className={`w-12 h-12 glass-panel flex items-center justify-center transition-all ${autoSnapUI ? 'text-primary border-primary/40 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'text-on-surface-variant border-white/10 hover:text-white'}`}>
-            <span className="material-symbols-outlined">auto_fix_high</span>
-          </button>
           <button onClick={() => {
             selectAllModeRef.current = !selectAllModeRef.current;
             showToast(selectAllModeRef.current ? 'Selected all strokes' : 'Deselected all strokes');
