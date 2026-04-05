@@ -135,20 +135,29 @@ export function useHandTracking(
     }
 
     /**
-     * True finger extension check.
-     * A finger is "extended" when:
-     *   - The TIP is further from the WRIST than the PIP joint  (length check)
-     *   - AND the TIP is further from the MCP (base knuckle) than the PIP is  (curl check)
-     * Using both conditions together handles downward/sideways pointing reliably.
+     * Rotation-invariant finger extension check.
+     * Measures straightness of the MCP→PIP→TIP chain using dot product.
+     * A curled finger bends at the PIP joint — the two vectors point in very
+     * different directions. An extended finger has vectors aligned (dot ≈ 1).
+     * This does NOT depend on the wrist position, so it's perfectly stable during
+     * circular drawing motions where the wrist rotates significantly.
      */
-    function isFingerExtended(tip: Landmark, _dip: Landmark, pip: Landmark, mcp: Landmark, wrist: Landmark): boolean {
-      const tipToWrist = dist(tip, wrist);
-      const pipToWrist = dist(pip, wrist);
-      const tipToMcp   = dist(tip, mcp);
-      const pipToMcp   = dist(pip, mcp);
+    function isFingerExtended(tip: Landmark, _dip: Landmark, pip: Landmark, mcp: Landmark, _wrist: Landmark): boolean {
+      // Vector MCP → PIP
+      const v1x = pip.x - mcp.x, v1y = pip.y - mcp.y, v1z = pip.z - mcp.z;
+      // Vector PIP → TIP
+      const v2x = tip.x - pip.x, v2y = tip.y - pip.y, v2z = tip.z - pip.z;
 
-      // Finger is extended if tip is further than PIP from BOTH the wrist and its own knuckle
-      return tipToWrist > pipToWrist && tipToMcp > pipToMcp * 0.9;
+      const dot = v1x * v2x + v1y * v2y + v1z * v2z;
+      const mag1 = Math.hypot(v1x, v1y, v1z);
+      const mag2 = Math.hypot(v2x, v2y, v2z);
+
+      if (mag1 === 0 || mag2 === 0) return false;
+
+      // cosine of the bend angle: 1 = perfectly straight, < 0 = folded back
+      // Threshold 0.5 ≈ 60° bend tolerance — extended but not necessarily rigid
+      const cosAngle = dot / (mag1 * mag2);
+      return cosAngle > 0.5;
     }
 
     /**
@@ -179,7 +188,10 @@ export function useHandTracking(
       const isFist    = !indexExt && !middleExt && !ringExt && !pinkyExt;
       const isOpen    = indexExt && middleExt && ringExt && pinkyExt;
       const isPeace   = indexExt && middleExt && !ringExt && !pinkyExt;
-      const isPoint   = indexExt && !middleExt && !ringExt && !pinkyExt;
+      // IndexPoint: index extended + ring + pinky curled.
+      // Middle finger is allowed to be slightly extended (not strict) to handle natural
+      // hand positions mid-circle where the middle finger lifts slightly.
+      const isPoint   = indexExt && !ringExt && !pinkyExt;
 
       let gesture: Gesture = 'None';
 
