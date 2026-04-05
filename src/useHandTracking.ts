@@ -110,31 +110,7 @@ export function useHandTracking(
       Left:  { raw: 'None', stable: 'None', count: 0 },
     };
 
-    // Per-slot handedness history: MediaPipe assigns hands to slot 0 and 1.
-    // We track the last N confirmed handedness labels per slot so a 1-frame
-    // misclassification doesn't flip which hand is "Right" mid-drawing.
-    const HANDEDNESS_LOCK_FRAMES = 5;
-    const slotHandedness: Record<number, { label: string; count: number; locked: string }> = {
-      0: { label: '', count: 0, locked: '' },
-      1: { label: '', count: 0, locked: '' },
-    };
-
-    function getStableHandedness(slotIndex: number, rawLabel: string): string {
-      const slot = slotHandedness[slotIndex];
-      if (!slot) return rawLabel;
-      if (slot.label === rawLabel) {
-        slot.count = Math.min(slot.count + 1, 60);
-      } else {
-        slot.label = rawLabel;
-        slot.count = 1;
-      }
-      // Only commit the new label once it has been consistent for N frames
-      if (slot.count >= HANDEDNESS_LOCK_FRAMES) {
-        slot.locked = rawLabel;
-      }
-      // If we've never locked a value yet, use the raw label on the first frames
-      return slot.locked || rawLabel;
-    }
+    const lostHandFrames: Record<string, number> = { Left: 0, Right: 0 };
 
     // Start webcam at maximum available resolution
     const streamRef = { current: null as MediaStream | null };
@@ -148,9 +124,14 @@ export function useHandTracking(
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    /** 3D normalised Euclidean distance between two landmarks */
+    function getAspect() {
+      return video.videoWidth > 0 ? video.videoWidth / video.videoHeight : 16 / 9;
+    }
+
+    /** 3D normalised Euclidean distance between two landmarks, aspect-corrected */
     function dist(a: Landmark, b: Landmark) {
-      return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+      const aspect = getAspect();
+      return Math.hypot((a.x - b.x) * aspect, a.y - b.y, (a.z - b.z) * aspect);
     }
 
     /**
@@ -245,7 +226,8 @@ export function useHandTracking(
         const prev = prevSmoothed[i];
         if (!prev) return lm;
 
-        const dx    = lm.x - prev.x;
+        const aspect = getAspect();
+        const dx    = (lm.x - prev.x) * aspect;
         const dy    = lm.y - prev.y;
         const speed = Math.hypot(dx, dy); // normalised [0..~0.1]
 
@@ -353,10 +335,9 @@ export function useHandTracking(
             const newHands: HandState[] = results.landmarks.map((rawLm, i) => {
               // Defensive access: MediaPipe sometimes drops handedness data even when landmarks are found
               const rawLabel = results.handednesses?.[i]?.[0]?.categoryName || 'Right';
-              // Persist handedness per slot to survive 1-2 frame misclassifications
-              const stableLabel = getStableHandedness(i, rawLabel);
               // Mirror: MediaPipe 'Right' in the flipped webcam image = user's Left hand
-              const hand   = stableLabel === 'Right' ? 'Left' : 'Right';
+              const hand   = rawLabel === 'Right' ? 'Left' : 'Right';
+              lostHandFrames[hand] = 0;
               activeHands.add(hand);
 
               // Apply velocity-adaptive EMA smoothing
@@ -379,34 +360,31 @@ export function useHandTracking(
               };
             });
 
-            // Clear smoothed + history for hands that left the frame
-            for (const hand of ['Left', 'Right']) {
-              if (!activeHands.has(hand)) {
+            handsRef.current = newHands; // sync ref immediately — zero React overhead
+            drawHUD(smoothedByHand, gestureByHand);
+          } else {
+            handsRef.current = [];
+          }
+
+          // Soft clear smoothed + history for hands that left the frame (5-frame grace period)
+          for (const hand of ['Left', 'Right']) {
+            if (!activeHands.has(hand)) {
+              lostHandFrames[hand] = (lostHandFrames[hand] || 0) + 1;
+              if (lostHandFrames[hand] > 5) {
                 delete smoothed[hand];
                 pinchActive[hand]    = false;
                 gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0 };
               }
             }
+          }
 
-            handsRef.current = newHands; // sync ref immediately — zero React overhead
-            drawHUD(smoothedByHand, gestureByHand);
-          } else {
-            // No hands visible → reset everything
-            for (const hand of ['Left', 'Right']) {
-              delete smoothed[hand];
-              pinchActive[hand]    = false;
-              gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0 };
-            }
-            // Reset slot history too
-            slotHandedness[0] = { label: '', count: 0, locked: '' };
-            slotHandedness[1] = { label: '', count: 0, locked: '' };
+          if (handsRef.current.length === 0) {
             // Clear HUD
             const hudCanvas = canvasRef.current;
             if (hudCanvas) {
               const ctx = hudCanvas.getContext('2d');
               ctx?.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
             }
-            handsRef.current = [];
           }
 
           // ── Latency: EMA-smooth and update display at 2fps (decorative number, no need to flicker) ──
