@@ -76,6 +76,8 @@ export default function App() {
   const brushColorRef = useRef<string>('#8ff5ff');
   const brushThicknessRef = useRef<number>(6);
   const globalTransformRef = useRef({ scale: 1, rotation: 0 });
+  const targetParallaxRef = useRef({ x: 0, y: 0 });
+  const currentParallaxRef = useRef({ x: 0, y: 0 });
   // Cursor preview: tracks right-hand index tip on the drawing canvas
   const cursorRef = useRef<{ x: number; y: number; visible: boolean; drawing: boolean; selecting: boolean }>({
     x: 0, y: 0, visible: false, drawing: false, selecting: false
@@ -154,6 +156,24 @@ export default function App() {
       const liveHands = handsRef.current;
       const rightHand = liveHands.find(h => h.handedness === 'Right');
       const leftHand  = liveHands.find(h => h.handedness === 'Left');
+
+      // 3D Parallax Calculation
+      if (liveHands.length > 0) {
+        let cx = 0, cy = 0, count = 0;
+        liveHands.forEach(hand => {
+          const wrist = hand.landmarks[0];
+          if (wrist) {
+            cx += (1 - wrist.x);
+            cy += wrist.y;
+            count++;
+          }
+        });
+        if (count > 0) {
+          targetParallaxRef.current = { x: ((cx / count) - 0.5) * 16, y: ((cy / count) - 0.5) * 16 };
+        }
+      } else {
+        targetParallaxRef.current = { x: 0, y: 0 };
+      }
 
       let currentMode = 'Idle';
       let newActiveStrokeId = activeStrokeIdRef.current;
@@ -326,6 +346,12 @@ export default function App() {
     function render() {
       // Process gestures here — same frame as drawing, no React cycle
       processGestures();
+
+      const pCurrent = currentParallaxRef.current;
+      const pTarget = targetParallaxRef.current;
+      pCurrent.x += (pTarget.x - pCurrent.x) * 0.06;
+      pCurrent.y += (pTarget.y - pCurrent.y) * 0.06;
+      canvas!.style.transform = `rotateX(${-pCurrent.y}deg) rotateY(${pCurrent.x}deg) scale(1.02)`;
 
       ctx!.clearRect(0, 0, canvas!.width, canvas!.height);
       
@@ -592,8 +618,8 @@ export default function App() {
 
       {/* Main Canvas Area */}
       <main className="ml-20 pt-16 h-screen w-[calc(100%-5rem)] relative overflow-hidden canvas-grid">
-        <div className="absolute inset-0 z-0">
-          <canvas ref={drawingCanvasRef} id="drawing-canvas" className="w-full h-full" />
+        <div className="absolute inset-0 z-0 flex items-center justify-center pointer-events-none" style={{ perspective: '1200px' }}>
+          <canvas ref={drawingCanvasRef} id="drawing-canvas" className="w-full h-full origin-center" />
         </div>
         
         {/* Global Status Bar */}
