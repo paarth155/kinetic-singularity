@@ -71,6 +71,7 @@ export default function App() {
   // ─────────────────────────────────────────────────────────────────────────
 
   const activeStrokeIdRef = useRef<string | null>(null);
+  const selectAllModeRef = useRef<boolean>(false);
   const modeRef = useRef<HTMLSpanElement>(null);
   
   const brushColorRef = useRef<string>('#8ff5ff');
@@ -118,9 +119,9 @@ export default function App() {
   // Manipulation state
   const leftHandState = useRef({
     initialPointer: { x: 0, y: 0 },
-    initialScale: 1,
-    initialRotation: 0,
-    initialTranslate: { x: 0, y: 0 },
+    initialTranslates: new Map<string, Vector2>(),
+    initialScales: new Map<string, number>(),
+    initialRotations: new Map<string, number>(),
     isGrabbing: false,
     isScaling: false,
     isRotating: false,
@@ -284,13 +285,19 @@ export default function App() {
       }
 
       // Left hand manipulation — find target stroke across all layers
-      const targetStroke = newActiveStrokeId ? findStrokeById(newActiveStrokeId) : (() => {
-        // Fallback: last stroke in active layer
-        const al = layersRef.current.find(l => l.id === activeLayerIdRef.current);
-        return al?.strokes[al.strokes.length - 1];
-      })();
+      let targetStrokes: Stroke[] = [];
+      if (selectAllModeRef.current) {
+        targetStrokes = allVisibleStrokes;
+      } else {
+        const ts = newActiveStrokeId ? findStrokeById(newActiveStrokeId) : (() => {
+          // Fallback: last stroke in active layer
+          const al = layersRef.current.find(l => l.id === activeLayerIdRef.current);
+          return al?.strokes[al.strokes.length - 1];
+        })();
+        if (ts) targetStrokes.push(ts);
+      }
 
-      if (leftHand && targetStroke) {
+      if (leftHand && targetStrokes.length > 0) {
         const state = leftHandState.current;
         const indexTip = leftHand.landmarks[8];
         const wrist = leftHand.landmarks[0];
@@ -302,10 +309,17 @@ export default function App() {
           if (!state.isGrabbing) {
             state.isGrabbing = true;
             state.initialPointer = { x: ptX, y: ptY };
-            state.initialTranslate = { ...targetStroke.translate };
+            targetStrokes.forEach(s => state.initialTranslates.set(s.id, { ...s.translate }));
           } else {
-            targetStroke.translate.x = state.initialTranslate.x + (ptX - state.initialPointer.x);
-            targetStroke.translate.y = state.initialTranslate.y + (ptY - state.initialPointer.y);
+            const dx = ptX - state.initialPointer.x;
+            const dy = ptY - state.initialPointer.y;
+            targetStrokes.forEach(s => {
+              const init = state.initialTranslates.get(s.id);
+              if (init) {
+                s.translate.x = init.x + dx;
+                s.translate.y = init.y + dy;
+              }
+            });
           }
         } else { state.isGrabbing = false; }
 
@@ -315,11 +329,14 @@ export default function App() {
           if (!state.isScaling) {
             state.isScaling = true;
             state.initialPointer = { x: currentX, y: 0 };
-            state.initialScale = targetStroke.scale;
+            targetStrokes.forEach(s => state.initialScales.set(s.id, s.scale));
           } else {
             const dragDelta = state.initialPointer.x - currentX;
             const scaleFactor = 1 + (dragDelta / 200);
-            targetStroke.scale = Math.max(0.05, Math.min(12, state.initialScale * scaleFactor));
+            targetStrokes.forEach(s => {
+              const init = state.initialScales.get(s.id) || 1;
+              s.scale = Math.max(0.05, Math.min(12, init * scaleFactor));
+            });
           }
         } else { state.isScaling = false; }
 
@@ -328,7 +345,8 @@ export default function App() {
           const mirrorIndexX = 1 - indexTip.x;
           const mirrorWristX = 1 - wrist.x;
           const angle = Math.atan2(indexTip.y - wrist.y, mirrorIndexX - mirrorWristX) * (180 / Math.PI);
-          targetStroke.rotation = Math.round(angle / 45) * 45;
+          const snappedAngle = Math.round(angle / 45) * 45;
+          targetStrokes.forEach(s => { s.rotation = snappedAngle; });
         }
       } else if (leftHand) {
         leftHandState.current.isGrabbing = false;
@@ -371,8 +389,8 @@ export default function App() {
       // Render all visible layers bottom-to-top
       layersRef.current.filter(l => l.visible).forEach(layer => {
       layer.strokes.forEach((stroke) => {
-        const isSelected = stroke.id === currentActiveId;
-        const isHovered = stroke.id === hoveredStrokeIdRef.current && !isSelected;
+        const isSelected = selectAllModeRef.current || stroke.id === currentActiveId;
+        const isHovered = !selectAllModeRef.current && stroke.id === hoveredStrokeIdRef.current && !isSelected;
         
         ctx!.save();
         
@@ -656,6 +674,18 @@ export default function App() {
             <span className="material-symbols-outlined">straighten</span>
           </button>
           <div className="h-4"></div>
+          <button onClick={() => {
+            selectAllModeRef.current = !selectAllModeRef.current;
+            showToast(selectAllModeRef.current ? 'Selected all strokes' : 'Deselected all strokes');
+            // Force a re-render by touching activeStrokeIdRef so the rendering picks up the cyan boxes
+            if (activeStrokeIdRef.current) {
+              const old = activeStrokeIdRef.current;
+              activeStrokeIdRef.current = null;
+              setTimeout(() => { activeStrokeIdRef.current = old; }, 0);
+            }
+          }} className={`w-12 h-12 glass-panel flex items-center justify-center transition-all group ${selectAllModeRef.current ? 'text-primary border-primary/40 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'text-on-surface-variant border-white/10'}`}>
+            <span className="material-symbols-outlined group-active:scale-90 transition-transform">select_all</span>
+          </button>
           <button onClick={() => {
             // Delete all strokes in ALL layers, keeping layers themselves
             layersRef.current.forEach(l => { l.strokes = []; });
