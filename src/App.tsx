@@ -217,7 +217,7 @@ export default function App() {
         const startEndDist = Math.hypot(end.x - start.x, end.y - start.y);
 
         // Circle detection
-        if (startEndDist < diag * 0.3) {
+        if (startEndDist < diag * 0.5) { // Loosened start/end gap for unclosed circles
           let cx = 0, cy = 0;
           stroke.points.forEach(p => { cx += p.x; cy += p.y; });
           cx /= stroke.points.length;
@@ -227,14 +227,14 @@ export default function App() {
           stroke.points.forEach(p => { avgRadii += Math.hypot(p.x - cx, p.y - cy); });
           avgRadii /= stroke.points.length;
           
-          let maxVariance = 0;
+          let sumVariance = 0;
           stroke.points.forEach(p => {
             const r = Math.hypot(p.x - cx, p.y - cy);
-            const diff = Math.abs(r - avgRadii);
-            if (diff > maxVariance) maxVariance = diff;
+            sumVariance += Math.abs(r - avgRadii);
           });
+          const meanVariance = sumVariance / stroke.points.length;
           
-          if (maxVariance < avgRadii * 0.3) {
+          if (meanVariance < avgRadii * 0.25) { // Average deviation is <25% of radius
             const newPoints = [];
             const steps = 36;
             for (let i = 0; i <= steps; i++) {
@@ -248,18 +248,18 @@ export default function App() {
         }
         
         // Line detection
-        if (startEndDist > diag * 0.8) {
-          let maxDist = 0;
+        if (startEndDist > diag * 0.7) { // Can be a line even if a bit wiggly
+          let sumDist = 0;
           const denom = Math.hypot(end.y - start.y, end.x - start.x);
           if (denom === 0) return;
           
           stroke.points.forEach(p => {
             const num = Math.abs((end.y - start.y) * p.x - (end.x - start.x) * p.y + end.x * start.y - end.y * start.x);
-            const d = num / denom;
-            if (d > maxDist) maxDist = d;
+            sumDist += num / denom;
           });
+          const meanDist = sumDist / stroke.points.length;
           
-          if (maxDist < diag * 0.12) {
+          if (meanDist < diag * 0.08) { // Average distance to line is very small
             const newPoints = [];
             const steps = 10;
             for (let i = 0; i <= steps; i++) {
