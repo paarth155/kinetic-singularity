@@ -1170,9 +1170,24 @@ export default function App() {
                     bctx.translate(-cx, -cy);
 
                     bctx.beginPath();
-                    bctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-                    for (let i = 1; i < stroke.points.length; i++) {
-                      bctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+                    if (stroke.points.length > 0) {
+                      bctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+                      if (stroke.points.length < 3) {
+                        stroke.points.forEach((p, idx) => {
+                          if (idx > 0) bctx.lineTo(p.x, p.y);
+                        });
+                      } else {
+                        let i = 1;
+                        for (; i < stroke.points.length - 2; i++) {
+                          const xc = (stroke.points[i].x + stroke.points[i + 1].x) / 2;
+                          const yc = (stroke.points[i].y + stroke.points[i + 1].y) / 2;
+                          bctx.quadraticCurveTo(stroke.points[i].x, stroke.points[i].y, xc, yc);
+                        }
+                        bctx.quadraticCurveTo(
+                          stroke.points[i].x, stroke.points[i].y,
+                          stroke.points[i + 1].x, stroke.points[i + 1].y
+                        );
+                      }
                     }
                     bctx.strokeStyle = stroke.color;
                     bctx.lineWidth = stroke.thickness;
