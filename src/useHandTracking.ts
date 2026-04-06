@@ -68,10 +68,10 @@ export function useHandTracking(
           },
           runningMode: 'VIDEO',
           numHands: 2,
-          // Balanced confidence: low enough to detect reliably, high enough to reject ghosts
-          minHandDetectionConfidence: 0.6,
-          minHandPresenceConfidence: 0.6,
-          minTrackingConfidence: 0.6,
+          // Balanced confidence: lowered to 0.45 for better performance in poor lighting conditions
+          minHandDetectionConfidence: 0.45,
+          minHandPresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45,
         });
         if (active) {
           landmarkerRef.current = landmarker;
