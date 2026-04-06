@@ -427,9 +427,24 @@ export default function App() {
       const birthEase = birthProgress < 1 ? 0.3 + 0.7 * birthProgress * (2 - birthProgress) : 1;
       const baseThickness = stroke.thickness * birthEase;
 
-      // Draw stroke with dynamic variable thickness based on segment velocity
+      const isText = stroke.id.startsWith('text-');
+
+      // Draw stroke
       if (stroke.points.length > 0) {
-        if (stroke.points.length < 3) {
+        if (isText) {
+          // Render rasterized text points as glowing scatter dots
+          targetCtx.fillStyle = stroke.color;
+          targetCtx.shadowColor = stroke.color;
+          targetCtx.shadowBlur = 10 * birthEase;
+          targetCtx.globalAlpha = Math.max(0.2, birthEase);
+          
+          targetCtx.beginPath();
+          for (let i = 0; i < stroke.points.length; i++) {
+             targetCtx.moveTo(stroke.points[i].x, stroke.points[i].y);
+             targetCtx.arc(stroke.points[i].x, stroke.points[i].y, 1.5, 0, Math.PI * 2);
+          }
+          targetCtx.fill();
+        } else if (stroke.points.length < 3) {
            // Fallback for tiny dots: solid path
            targetCtx.beginPath();
            targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
@@ -1227,8 +1242,16 @@ export default function App() {
                     bctx.scale(stroke.scale, stroke.scale);
                     bctx.translate(-cx, -cy);
 
-                    bctx.beginPath();
-                    if (stroke.points.length > 0) {
+                    if (stroke.id.startsWith('text-')) {
+                       bctx.fillStyle = stroke.color;
+                       bctx.beginPath();
+                       for (let i = 0; i < stroke.points.length; i++) {
+                          bctx.moveTo(stroke.points[i].x, stroke.points[i].y);
+                          bctx.arc(stroke.points[i].x, stroke.points[i].y, 1.5, 0, Math.PI * 2);
+                       }
+                       bctx.fill();
+                    } else if (stroke.points.length > 0) {
+                      bctx.beginPath();
                       bctx.moveTo(stroke.points[0].x, stroke.points[0].y);
                       if (stroke.points.length < 3) {
                         stroke.points.forEach((p, idx) => {
@@ -1246,12 +1269,12 @@ export default function App() {
                           stroke.points[i + 1].x, stroke.points[i + 1].y
                         );
                       }
+                      bctx.strokeStyle = stroke.color;
+                      bctx.lineWidth = stroke.thickness;
+                      bctx.lineCap = 'round';
+                      bctx.lineJoin = 'round';
+                      bctx.stroke();
                     }
-                    bctx.strokeStyle = stroke.color;
-                    bctx.lineWidth = stroke.thickness;
-                    bctx.lineCap = 'round';
-                    bctx.lineJoin = 'round';
-                    bctx.stroke();
                     bctx.restore();
                   });
                 });
