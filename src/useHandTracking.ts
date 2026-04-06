@@ -122,10 +122,11 @@ export function useHandTracking(
       raw: Gesture;
       stable: Gesture;
       count: number;
+      graceTimer: number;
     }
     const gestureHistory: Record<string, GestureHistory> = {
-      Right: { raw: 'None', stable: 'None', count: 0 },
-      Left:  { raw: 'None', stable: 'None', count: 0 },
+      Right: { raw: 'None', stable: 'None', count: 0, graceTimer: 0 },
+      Left:  { raw: 'None', stable: 'None', count: 0, graceTimer: 0 },
     };
 
     const lostHandFrames: Record<string, number> = { Left: 0, Right: 0 };
@@ -242,6 +243,8 @@ export function useHandTracking(
 
     // ── Debounce ─────────────────────────────────────────────────────────────
 
+    const GRACE_FRAMES = 10; // Frames to remember a gesture if it temporarily drops to None
+
     function stabiliseGesture(raw: Gesture, history: GestureHistory): Gesture {
       if (history.raw === raw) {
         history.count = Math.min(history.count + 1, 60);
@@ -249,9 +252,19 @@ export function useHandTracking(
         history.raw   = raw;
         history.count = 1;
       }
+
+      // If we achieved a stable gesture and suddenly lost it to 'None', enter grace period
+      if (history.stable !== 'None' && raw === 'None') {
+         history.graceTimer = Math.min(history.graceTimer + 1, GRACE_FRAMES);
+         if (history.graceTimer < GRACE_FRAMES) {
+             return history.stable; // Force keep the old strong gesture
+         }
+      }
+
       // Lock in once gesture has been stable for the required number of frames
       if (history.count >= GESTURE_FRAMES[raw]) {
         history.stable = raw;
+        history.graceTimer = 0; // Reset grace on new stable gesture
       }
       return history.stable;
     }
@@ -381,11 +394,29 @@ export function useHandTracking(
             const smoothedByHand: Record<string, Landmark[]>  = {};
             const gestureByHand:  Record<string, Gesture>     = {};
 
-            const newHands: HandState[] = results.landmarks.map((rawLm, i) => {
-              // Defensive access: MediaPipe sometimes drops handedness data even when landmarks are found
-              const rawLabel = results.handednesses?.[i]?.[0]?.categoryName || 'Right';
-              // Mirror: MediaPipe 'Right' in the flipped webcam image = user's Left hand
-              const hand   = rawLabel === 'Right' ? 'Left' : 'Right';
+            // ─── Logical Hand Assignment ───
+            // Ignore MediaPipe's 'handednesses' completely. 
+            // If 1 hand: it is Right (Drawing hand).
+            // If 2 hands: the one with a lower average X is Left (in flipped webcam space, left side of screen).
+            let currentHandsInfo = results.landmarks.map(rawLm => {
+              const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
+              return { rawLm, cx, assigned: 'Right' as 'Left' | 'Right' }; 
+            });
+
+            if (currentHandsInfo.length === 2) {
+               // Webcam is horizontally flipped. X=0 is left of screen, X=1 is right of screen.
+               // Normally, user's Right hand appears on the left side of the screen (lower X).
+               // user's Left hand appears on the right side of the screen (higher X).
+               const rightHandIdx = currentHandsInfo[0].cx < currentHandsInfo[1].cx ? 0 : 1;
+               currentHandsInfo[rightHandIdx].assigned = 'Right';
+               currentHandsInfo[1 - rightHandIdx].assigned = 'Left';
+            } else if (currentHandsInfo.length > 2) {
+               // Fallback if ghosts appear
+               currentHandsInfo = currentHandsInfo.slice(0, 2);
+            }
+
+            const newHands: HandState[] = currentHandsInfo.map(({ rawLm, assigned }) => {
+              const hand = assigned;
               lostHandFrames[hand] = 0;
               activeHands.add(hand);
 
@@ -403,7 +434,7 @@ export function useHandTracking(
 
               return {
                 landmarks:  lm,
-                handedness: hand as 'Left' | 'Right',
+                handedness: hand,
                 gesture:    stableGesture,
                 pinchRatio,
               };
@@ -422,7 +453,7 @@ export function useHandTracking(
               if (lostHandFrames[hand] > 5) {
                 delete smoothed[hand];
                 pinchActive[hand]    = false;
-                gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0 };
+                gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0, graceTimer: 0 };
               }
             }
           }
