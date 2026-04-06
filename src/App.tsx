@@ -300,7 +300,7 @@ export default function App() {
     invalidateCache(); // Rebuild cache with new theme selection colors
   }, [invalidateCache]);
 
-  // trackingQuality: currently visual-only (no runtime effect), kept for future wiring
+
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
