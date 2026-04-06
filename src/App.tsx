@@ -1,42 +1,15 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { useHandTracking } from './useHandTracking';
 
-type Vector2 = { x: number; y: number };
-
-type StrokeBounds = { minX: number; minY: number; maxX: number; maxY: number };
-
-type Stroke = {
-  id: string;
-  points: Vector2[];
-  color: string;
-  thickness: number;
-  scale: number;
-  rotation: number;
-  translate: Vector2;
-  centroid: Vector2; // cached centroid for O(1) hover/select lookups
-  bounds: StrokeBounds; // cached bounding box for O(1) render setup
-  birthTime: number; // timestamp for birth animation
-};
-
-function computeCentroid(points: Vector2[]): Vector2 {
-  if (points.length === 0) return { x: 0, y: 0 };
-  let cx = 0, cy = 0;
-  for (let i = 0; i < points.length; i++) { cx += points[i].x; cy += points[i].y; }
-  return { x: cx / points.length, y: cy / points.length };
-}
-
-function computeBounds(points: Vector2[]): StrokeBounds {
-  if (points.length === 0) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (let i = 0; i < points.length; i++) {
-    const p = points[i];
-    if (p.x < minX) minX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y > maxY) maxY = p.y;
-  }
-  return { minX, minY, maxX, maxY };
-}
+import {
+  type Vector2,
+  type Stroke,
+  generateShapePoints,
+  textToPoints,
+  computeCentroid,
+  computeBounds,
+  decimatePoints
+} from './utils/geometry';
 
 type Layer = {
   id: string;
@@ -48,6 +21,96 @@ type Layer = {
 
 const DEFAULT_LAYER: Layer = { id: 'layer-1', name: 'Layer 1', visible: true, locked: false, strokes: [] };
 
+type ThemeId = 'holo-blue' | 'crimson';
+
+function SettingsModal({ activeTheme, applyTheme, closeModal, showToast }: { activeTheme: ThemeId, applyTheme: (t: ThemeId) => void, closeModal: () => void, showToast: (m: string) => void }) {
+  const [draftQuality, setDraftQuality] = useState('balanced');
+  const [draftTheme, setDraftTheme] = useState<ThemeId>(activeTheme);
+  const [draftSmoothing, setDraftSmoothing] = useState(50);
+  return (
+    <div className="absolute inset-0 bg-black/60 z-50 flex items-center justify-center backdrop-blur-sm">
+       <div className="glass-panel p-8 max-w-md w-full relative border border-primary/20 shadow-[0_0_80px_rgba(143,245,255,0.1)]">
+         <button onClick={closeModal} className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors"><span className="material-symbols-outlined">close</span></button>
+         <h2 className="text-xl font-space-grotesk text-primary mb-6 tracking-widest uppercase">System Settings</h2>
+         <div className="space-y-4 text-sm text-white/70">
+           <div className="flex justify-between items-center bg-white/5 p-4 rounded border border-white/5">
+              <div>
+                <label className="font-space-grotesk tracking-wide text-xs uppercase block">Tracking Engine</label>
+                <span className="text-[10px] text-white/30">Hand detection performance mode</span>
+              </div>
+              <select
+                value={draftQuality}
+                onChange={(e) => setDraftQuality(e.target.value)}
+                className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded px-2 py-1 text-xs"
+              >
+                <option value="high">High Perf</option>
+                <option value="balanced">Balanced</option>
+                <option value="economy">Economy</option>
+              </select>
+           </div>
+           <div className="flex justify-between items-center bg-white/5 p-4 rounded border border-white/5">
+              <div>
+                <label className="font-space-grotesk tracking-wide text-xs uppercase block">Hand Smoothing</label>
+                <span className="text-[10px] text-white/30">EMA filter strength (higher = smoother)</span>
+              </div>
+              <div className="flex items-center gap-2 w-1/2">
+                <input
+                  type="range" min="0" max="100" value={draftSmoothing}
+                  className="flex-1 accent-primary"
+                  onChange={(e) => setDraftSmoothing(parseInt(e.target.value))}
+                />
+                <span className="text-[10px] text-white/40 w-6">{draftSmoothing}</span>
+              </div>
+           </div>
+           <div className="flex justify-between items-center bg-white/5 p-4 rounded border border-white/5">
+              <div>
+                <label className="font-space-grotesk tracking-wide text-xs uppercase block">UI Theme</label>
+                <span className="text-[10px] text-white/30">Color accent for the interface</span>
+              </div>
+              <select
+                value={draftTheme}
+                onChange={(e) => setDraftTheme(e.target.value as ThemeId)}
+                className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded px-2 py-1 text-xs"
+              >
+                <option value="holo-blue">Holo Blue</option>
+                <option value="crimson">Crimson</option>
+              </select>
+           </div>
+         </div>
+         <button
+           onClick={() => {
+             applyTheme(draftTheme);
+             showToast(`Theme changed to ${draftTheme === 'crimson' ? 'Crimson' : 'Holo Blue'}.`);
+             closeModal();
+           }}
+           className="mt-8 w-full bg-primary/20 hover:bg-primary text-primary hover:text-background border border-primary font-space-grotesk tracking-widest text-xs py-3 transition-colors uppercase"
+         >
+           Apply Changes
+         </button>
+       </div>
+    </div>
+  );
+}
+
+function DepthPanel({ brushThicknessRef }: { brushThicknessRef: React.MutableRefObject<number> }) {
+  const [thickness, setThickness] = useState(brushThicknessRef.current);
+  return (
+    <div className="absolute left-24 top-1/2 -translate-y-1/2 glass-panel p-5 z-40 w-56 border border-primary/20 slide-in-from-left animate-in duration-300">
+       <div className="flex justify-between items-center border-b border-white/5 pb-3 mb-4">
+           <h3 className="text-[10px] uppercase tracking-widest font-space-grotesk text-primary opacity-60">Stroke Thickness</h3>
+           <span className="text-xs text-white/50">{thickness}px</span>
+       </div>
+       <input type="range" min="1" max="30" value={thickness} className="w-full h-1 bg-white/20 rounded outline-none appearance-none accent-primary" 
+        onChange={(e) => { 
+          const val = parseInt(e.target.value);
+          brushThicknessRef.current = val;
+          setThickness(val);
+        }} 
+       />
+    </div>
+  );
+}
+
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hudCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -58,13 +121,14 @@ export default function App() {
   const cacheInvalidRef = useRef<boolean>(true); // start dirty so first frame renders
   const prevTransformKeyRef = useRef<string>(''); // detect transform changes
   const prevHoveredIdRef = useRef<string | null>(null); // track hover changes for cache invalidation
+  const pendingBakesRef = useRef<Set<string>>(new Set());
 
   // ─── Stroke index & cached visible strokes (rebuilt only when dirty) ─────
   const strokeIndexRef = useRef<Map<string, Stroke>>(new Map());
   const visibleStrokesRef = useRef<Stroke[]>([]);
   const visibleStrokesDirtyRef = useRef<boolean>(true);
 
-  function rebuildStrokeIndex() {
+  const rebuildStrokeIndex = useCallback(() => {
     const map = new Map<string, Stroke>();
     const visible: Stroke[] = [];
     for (const layer of layersRef.current) {
@@ -80,9 +144,9 @@ export default function App() {
     strokeIndexRef.current = map;
     visibleStrokesRef.current = visible;
     visibleStrokesDirtyRef.current = false;
-  }
+  }, []);
   
-  const { hands, handsRef, isReady, latency } = useHandTracking(videoRef, hudCanvasRef);
+  const { hands, handsRef, isReady, latency, error } = useHandTracking(videoRef, hudCanvasRef);
   
   // ─── Layer system ───────────────────────────────────────────────────────────
   // layersRef is the mutable source-of-truth used in the RAF loop.
@@ -92,8 +156,9 @@ export default function App() {
   const [layers, setLayers] = useState<Layer[]>(layersRef.current);
   const activeLayerIdRef = useRef<string>('layer-1');
 
-  const syncLayersState = () => setLayers(layersRef.current.map(l => ({ ...l, strokes: l.strokes })));
-  const invalidateCache = () => { cacheInvalidRef.current = true; visibleStrokesDirtyRef.current = true; };
+  const syncLayersState = useCallback(() => setLayers(layersRef.current.map(l => ({ ...l, strokes: [...l.strokes] }))), []);
+  const invalidateCache = useCallback(() => { cacheInvalidRef.current = true; visibleStrokesDirtyRef.current = true; }, []);
+  const invalidateRenderCache = useCallback(() => { cacheInvalidRef.current = true; }, []);
 
   const addLayer = () => {
     const id = `layer-${Date.now()}`;
@@ -129,7 +194,55 @@ export default function App() {
 
   const activeStrokeIdRef = useRef<string | null>(null);
   const selectAllModeRef = useRef<boolean>(false);
+  const [selectAllModeState, setSelectAllModeState] = useState<boolean>(false);
   const modeRef = useRef<HTMLSpanElement>(null);
+
+  // ─── Input modes: 'hand' (default), 'mouse', 'text', 'select' ─────────────
+  const [inputMode, setInputMode] = useState<'hand' | 'mouse' | 'text' | 'select'>('hand');
+  const inputModeRef = useRef<'hand' | 'mouse' | 'text' | 'select'>('hand');
+  // Keep ref in sync for RAF loop; also imperatively reset the hand cursor when switching modes
+  useEffect(() => { 
+    inputModeRef.current = inputMode; 
+    // Imperative cursor reset: disable hand cursor immediately when switching modes
+    if (inputMode !== 'hand') {
+      cursorRef.current.visible = false;
+      hoveredStrokeIdRef.current = null;
+    }
+  }, [inputMode]);
+
+
+  // Mouse drawing state (managed via refs for RAF loop)
+  const mouseDrawingRef = useRef<boolean>(false);
+  const mouseStrokeIdRef = useRef<string | null>(null);
+
+  // ─── Mouse select/transform state ─────────────────────────────────────────
+  type DragHandle = 'body' | 'nw' | 'ne' | 'sw' | 'se' | 'rotate' | null;
+  const mouseSelectedIdRef = useRef<string | null>(null);
+  const mouseDragHandleRef = useRef<DragHandle>(null);
+  const mouseDragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const mouseDragInitTranslateRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const mouseDragInitScaleRef = useRef<number>(1);
+  const mouseDragInitRotationRef = useRef<number>(0);
+  const mouseDragActiveRef = useRef<boolean>(false);
+  // Reactive cursor style for the select-mode canvas — updated whenever the drag handle changes
+  const [mouseCursorStyle, setMouseCursorStyle] = useState<string>('default');
+  // Helper: set both the ref and the reactive state together so the canvas style updates
+  const setDragHandle = (handle: DragHandle) => {
+    mouseDragHandleRef.current = handle;
+    setMouseCursorStyle(
+      handle === 'body' ? 'move'
+        : handle === 'rotate' ? 'grabbing'
+        : handle !== null ? 'nwse-resize'
+        : 'default'
+    );
+  };
+  // We need to expose the selected stroke's transformed bounds for handle hit-testing
+  const mouseSelectionBoxRef = useRef<{ minX: number; minY: number; maxX: number; maxY: number } | null>(null);
+
+  // Text input state
+  const [showTextInput, setShowTextInput] = useState(false);
+  const [textInputPos, setTextInputPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const textInputRef = useRef<HTMLInputElement>(null);
   
   const brushColorRef = useRef<string>('#8ff5ff');
   const brushThicknessRef = useRef<number>(6);
@@ -150,30 +263,33 @@ export default function App() {
   const [activeSidebarPanel, setActiveSidebarPanel] = useState<string | null>(null);
 
   // ─── Theme ───────────────────────────────────────────────────────────────────
-  type ThemeId = 'holo-blue' | 'crimson';
   const [activeTheme, setActiveTheme] = useState<ThemeId>('holo-blue');
+  const themeSelColorRef = useRef<string>('#8ff5ff');
   const applyTheme = useCallback((theme: ThemeId) => {
     document.documentElement.setAttribute('data-theme', theme);
     setActiveTheme(theme);
     // Swap brush cursor default color to match theme accent
     if (theme === 'crimson') {
       brushColorRef.current = brushColorRef.current === '#8ff5ff' ? '#ff4f6d' : brushColorRef.current;
+      themeSelColorRef.current = '#ff4f6d';
     } else {
       brushColorRef.current = brushColorRef.current === '#ff4f6d' ? '#8ff5ff' : brushColorRef.current;
+      themeSelColorRef.current = '#8ff5ff';
     }
     invalidateCache(); // Rebuild cache with new theme selection colors
-  }, []);
+  }, [invalidateCache]);
 
   // trackingQuality: currently visual-only (no runtime effect), kept for future wiring
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToastMessage(msg);
+    // Truncate overly long messages to prevent UI overflow (cap at 80 visible chars)
+    setToastMessage(msg.length > 80 ? msg.slice(0, 79) + '…' : msg);
     toastTimerRef.current = setTimeout(() => { setToastMessage(null); toastTimerRef.current = null; }, 3000);
-  };
+  }, []);
   
   // Manipulation state
   const leftHandState = useRef({
@@ -219,29 +335,7 @@ export default function App() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // ─── Point decimation helper (Ramer-Douglas-Peucker) ─────────────
-    function perpendicularDistance(pt: Vector2, lineStart: Vector2, lineEnd: Vector2): number {
-      const dx = lineEnd.x - lineStart.x;
-      const dy = lineEnd.y - lineStart.y;
-      const mag = Math.hypot(dx, dy);
-      if (mag === 0) return Math.hypot(pt.x - lineStart.x, pt.y - lineStart.y);
-      return Math.abs(dx * (lineStart.y - pt.y) - dy * (lineStart.x - pt.x)) / mag;
-    }
 
-    function decimatePoints(points: Vector2[], epsilon: number): Vector2[] {
-      if (points.length <= 2) return points;
-      let maxDist = 0, maxIdx = 0;
-      for (let i = 1; i < points.length - 1; i++) {
-        const d = perpendicularDistance(points[i], points[0], points[points.length - 1]);
-        if (d > maxDist) { maxDist = d; maxIdx = i; }
-      }
-      if (maxDist > epsilon) {
-        const left = decimatePoints(points.slice(0, maxIdx + 1), epsilon);
-        const right = decimatePoints(points.slice(maxIdx), epsilon);
-        return left.slice(0, -1).concat(right);
-      }
-      return [points[0], points[points.length - 1]];
-    }
 
     // ─── Render a single stroke to a given context ───────────────────
     // themeSelColor is read inside render() so it updates with theme switches
@@ -359,8 +453,12 @@ export default function App() {
     }
 
     function processGestures() {
-      // Guard: don't process if no hands are being tracked yet and canvas is empty
-      if (handsRef.current.length === 0 && visibleStrokesRef.current.length === 0) return;
+      // Guard: don't process if no hands are being tracked yet and canvas is empty.
+      // Reset parallax target before returning so the canvas doesn't stay tilted.
+      if (handsRef.current.length === 0 && visibleStrokesRef.current.length === 0) {
+        targetParallaxRef.current = { x: 0, y: 0 };
+        return;
+      }
       const liveHands = handsRef.current;
       const rightHand = liveHands.find(h => h.handedness === 'Right');
       const leftHand  = liveHands.find(h => h.handedness === 'Left');
@@ -405,19 +503,24 @@ export default function App() {
         const screenY = indexTip.y * canvas!.height;
 
         cursorRef.current = {
-          x: screenX, y: screenY, visible: true,
-          drawing: rightHand.gesture === 'IndexPoint',
-          selecting: rightHand.gesture === 'Pinch',
+          x: screenX, y: screenY, 
+          visible: inputModeRef.current === 'hand',
+          drawing: inputModeRef.current === 'hand' && rightHand.gesture === 'IndexPoint',
+          selecting: inputModeRef.current === 'hand' && rightHand.gesture === 'Pinch',
         };
 
         // Hover detection (idle only) — uses cached centroids
-        if (rightHand.gesture === 'None') {
+        if (rightHand.gesture === 'None' && inputModeRef.current === 'hand') {
           let nearestId: string | null = null;
-          let nearestDist = 180;
+          let minScore = Number.MAX_VALUE;
           for (const s of allVisibleStrokes) {
             if (s.points.length === 0) continue;
             const d = Math.hypot(s.centroid.x + s.translate.x - screenX, s.centroid.y + s.translate.y - screenY);
-            if (d < nearestDist) { nearestDist = d; nearestId = s.id; }
+            const threshold = 180 * Math.max(0.5, s.scale);
+            if (d < threshold) {
+              const score = d / s.scale;
+              if (score < minScore) { minScore = score; nearestId = s.id; }
+            }
           }
           hoveredStrokeIdRef.current = nearestId;
         } else {
@@ -426,10 +529,11 @@ export default function App() {
         // Invalidate cache when hover target changes so outline renders/clears
         if (hoveredStrokeIdRef.current !== prevHoveredIdRef.current) {
           prevHoveredIdRef.current = hoveredStrokeIdRef.current;
-          invalidateCache();
+          invalidateRenderCache();
         }
 
-        if (rightHand.gesture === 'IndexPoint') {
+        if (rightHand.gesture === 'IndexPoint' && inputModeRef.current === 'hand') {
+
           currentMode = 'Draw';
           if (!activeLayer.locked) {
             if (!rightWasPointing.current) {
@@ -468,23 +572,8 @@ export default function App() {
               }
             }
           }
-        } else {
-          // When user lifts their index finger, decimate the just-finished stroke & cache centroid
-          if (rightWasPointing.current) {
-            const finishedStroke = findStrokeById(newActiveStrokeId ?? '');
-            if (finishedStroke) {
-              if (finishedStroke.points.length > 20) {
-                finishedStroke.points = decimatePoints(finishedStroke.points, 1.0);
-              }
-              finishedStroke.centroid = computeCentroid(finishedStroke.points);
-              finishedStroke.bounds = computeBounds(finishedStroke.points);
-            }
-            invalidateCache();
-          }
-          rightWasPointing.current = false;
-        }
+        } else if (rightHand.gesture === 'Fist' && inputModeRef.current === 'hand') {
 
-        if (rightHand.gesture === 'Fist') {
           currentMode = 'Clear Canvas';
           // Clear only the active layer
           if (activeLayer.strokes.length > 0) {
@@ -492,22 +581,51 @@ export default function App() {
             newActiveStrokeId = null;
             invalidateCache();
           }
-        }
+        } else if (rightHand.gesture === 'Pinch' && inputModeRef.current === 'hand') {
 
-        if (rightHand.gesture === 'Pinch') {
           currentMode = 'Select';
           let nearestId: string | null = null;
-          let nearestDist = 220;
+          let minScore = Number.MAX_VALUE;
           for (const s of allVisibleStrokes) {
             if (s.points.length === 0) continue;
             const d = Math.hypot(s.centroid.x + s.translate.x - screenX, s.centroid.y + s.translate.y - screenY);
-            if (d < nearestDist) { nearestDist = d; nearestId = s.id; }
+            const threshold = 220 * Math.max(0.5, s.scale);
+            if (d < threshold) {
+              const score = d / s.scale;
+              if (score < minScore) { minScore = score; nearestId = s.id; }
+            }
           }
           if (nearestId && nearestId !== newActiveStrokeId) {
             newActiveStrokeId = nearestId;
           }
         }
+
+        // When user lifts their index finger, decimate the just-finished stroke & cache centroid
+        if (rightWasPointing.current && rightHand.gesture !== 'IndexPoint') {
+          const finishedStroke = findStrokeById(newActiveStrokeId ?? '');
+          if (finishedStroke) {
+            if (finishedStroke.points.length > 20) {
+              finishedStroke.points = decimatePoints(finishedStroke.points, 1.0);
+            }
+            finishedStroke.centroid = computeCentroid(finishedStroke.points);
+            finishedStroke.bounds = computeBounds(finishedStroke.points);
+          }
+          invalidateCache();
+          rightWasPointing.current = false;
+        }
       } else {
+        // Right hand left the frame — finalize any in-progress stroke
+        if (rightWasPointing.current) {
+          const finishedStroke = findStrokeById(newActiveStrokeId ?? '');
+          if (finishedStroke) {
+            if (finishedStroke.points.length > 20) {
+              finishedStroke.points = decimatePoints(finishedStroke.points, 1.0);
+            }
+            finishedStroke.centroid = computeCentroid(finishedStroke.points);
+            finishedStroke.bounds = computeBounds(finishedStroke.points);
+          }
+          invalidateCache();
+        }
         rightWasPointing.current = false;
         cursorRef.current.visible = false;
       }
@@ -548,7 +666,7 @@ export default function App() {
                 s.translate.y = init.y + dy;
               }
             });
-            invalidateCache();
+            invalidateRenderCache();
           }
         } else {
           if (state.isGrabbing) { state.initialTranslates.clear(); }
@@ -569,7 +687,7 @@ export default function App() {
               const init = state.initialScales.get(s.id) || 1;
               s.scale = Math.max(0.05, Math.min(12, init * scaleFactor));
             });
-            invalidateCache();
+            invalidateRenderCache();
           }
         } else {
           if (state.isScaling) { state.initialScales.clear(); }
@@ -583,7 +701,7 @@ export default function App() {
           const angle = Math.atan2(indexTip.y - wrist.y, mirrorIndexX - mirrorWristX) * (180 / Math.PI);
           const snappedAngle = Math.round(angle / 45) * 45;
           targetStrokes.forEach(s => { s.rotation = snappedAngle; });
-          invalidateCache();
+          invalidateRenderCache();
         }
       } else if (leftHand) {
         leftHandState.current.isGrabbing = false;
@@ -611,7 +729,7 @@ export default function App() {
 
       // Re-read theme color only when cache rebuilds (selection boxes are drawn there)
       if (cacheInvalidRef.current) {
-        themeSelColor = getComputedStyle(document.documentElement).getPropertyValue('--color-primary').trim() || '#8ff5ff';
+        themeSelColor = themeSelColorRef.current;
       }
 
       const pCurrent = currentParallaxRef.current;
@@ -640,6 +758,7 @@ export default function App() {
 
       // ─── Collect all visible strokes, separate active from completed ─
       const activeDrawingId = rightWasPointing.current ? currentActiveId : null;
+      const mouseSelId = mouseSelectedIdRef.current;
       
       ctx!.save();
       
@@ -653,6 +772,8 @@ export default function App() {
 
       // ─── Rebuild offscreen cache if dirty ──────────────────────────
       const offscreen = offscreenCanvasRef.current;
+      const now = performance.now();
+      
       if (offscreen && cacheInvalidRef.current) {
         const oCtx = offscreen.getContext('2d');
         if (oCtx) {
@@ -666,8 +787,12 @@ export default function App() {
 
           layersRef.current.filter(l => l.visible).forEach(layer => {
             layer.strokes.forEach(stroke => {
-              // Skip the actively-being-drawn stroke; it will be drawn live
-              if (stroke.id === activeDrawingId) return;
+              // Skip actively-being-drawn and animating strokes
+              const isAnimating = now - stroke.birthTime < 1500;
+              if (stroke.id === activeDrawingId || isAnimating) {
+                if (isAnimating) pendingBakesRef.current.add(stroke.id);
+                return;
+              }
               const isSelected = selectAllModeRef.current || stroke.id === currentActiveId;
               const isHovered = !selectAllModeRef.current && stroke.id === hoveredStrokeIdRef.current && !isSelected;
               renderStroke(oCtx, stroke, isSelected, isHovered);
@@ -684,22 +809,47 @@ export default function App() {
         ctx!.drawImage(offscreen, 0, 0);
       }
 
-      // ─── Draw the active in-progress stroke live ───────────────────
-      if (activeDrawingId) {
-        ctx!.save();
-        ctx!.translate(cw, ch);
-        ctx!.rotate((t.rotation * Math.PI) / 180);
-        ctx!.scale(t.scale, t.scale);
-        ctx!.translate(-cw, -ch);
+      // ─── Draw the active in-progress stroke & animating strokes live ───────────────────
+      ctx!.save();
+      ctx!.translate(cw, ch);
+      ctx!.rotate((t.rotation * Math.PI) / 180);
+      ctx!.scale(t.scale, t.scale);
+      ctx!.translate(-cw, -ch);
+      
+      let needsBake = false;
 
+      if (activeDrawingId) {
         // Find the active stroke via O(1) Map lookup
         const activeStroke = strokeIndexRef.current.get(activeDrawingId);
         if (activeStroke) {
           const isSelected = selectAllModeRef.current || activeStroke.id === currentActiveId;
           renderStroke(ctx!, activeStroke, isSelected, false);
         }
-        ctx!.restore();
       }
+
+      if (pendingBakesRef.current.size > 0) {
+        for (const strokeId of pendingBakesRef.current) {
+          if (strokeId === activeDrawingId) continue;
+          const stroke = strokeIndexRef.current.get(strokeId);
+          if (stroke) {
+            const age = now - stroke.birthTime;
+            if (age < 1500) {
+              const isSelected = selectAllModeRef.current || stroke.id === currentActiveId;
+              const isHovered = !selectAllModeRef.current && stroke.id === hoveredStrokeIdRef.current && !isSelected;
+              renderStroke(ctx!, stroke, isSelected, isHovered);
+            } else {
+              pendingBakesRef.current.delete(strokeId);
+              needsBake = true;
+            }
+          } else {
+            pendingBakesRef.current.delete(strokeId);
+          }
+        }
+      }
+      
+      ctx!.restore();
+      
+      if (needsBake) invalidateRenderCache();
 
       // (global transform already restored above via ctx!.restore())
 
@@ -773,6 +923,103 @@ export default function App() {
         }
       }
 
+      // ─── Mouse-select handles (drawn in screen space) ─────────────────
+      if (inputModeRef.current === 'select' && mouseSelId) {
+        const selStroke = strokeIndexRef.current.get(mouseSelId);
+        if (selStroke && selStroke.points.length > 0) {
+          const { minX, minY, maxX, maxY } = selStroke.bounds;
+          const bCx = minX + (maxX - minX) / 2;
+          const bCy = minY + (maxY - minY) / 2;
+
+          // Apply stroke transforms to compute screen-space box
+          const pad = 14;
+          const s = selStroke.scale;
+          const tx = selStroke.translate.x;
+          const ty = selStroke.translate.y;
+          const hw = ((maxX - minX) / 2 + pad) * s;
+          const hh = ((maxY - minY) / 2 + pad) * s;
+          const cx2 = bCx + tx;
+          const cy2 = bCy + ty;
+          const sMinX = cx2 - hw;
+          const sMinY = cy2 - hh;
+          const sMaxX = cx2 + hw;
+          const sMaxY = cy2 + hh;
+
+          // Store for hit-testing in pointer events
+          mouseSelectionBoxRef.current = { minX: sMinX, minY: sMinY, maxX: sMaxX, maxY: sMaxY };
+
+          const rotRad = (selStroke.rotation * Math.PI) / 180;
+
+          ctx!.save();
+          ctx!.translate(cx2, cy2);
+          ctx!.rotate(rotRad);
+
+          // Bounding box
+          ctx!.strokeStyle = themeSelColor;
+          ctx!.lineWidth = 1.5;
+          ctx!.setLineDash([6, 4]);
+          ctx!.shadowColor = themeSelColor;
+          ctx!.shadowBlur = 12;
+          ctx!.strokeRect(-hw, -hh, hw * 2, hh * 2);
+          ctx!.setLineDash([]);
+          ctx!.shadowBlur = 0;
+
+          // Corner resize handles
+          const corners: [number, number][] = [[-hw, -hh], [hw, -hh], [-hw, hh], [hw, hh]];
+          corners.forEach(([hx, hy]) => {
+            ctx!.beginPath();
+            ctx!.arc(hx, hy, 6, 0, Math.PI * 2);
+            ctx!.fillStyle = '#0c0e12';
+            ctx!.fill();
+            ctx!.beginPath();
+            ctx!.arc(hx, hy, 6, 0, Math.PI * 2);
+            ctx!.strokeStyle = themeSelColor;
+            ctx!.lineWidth = 2;
+            ctx!.shadowColor = themeSelColor;
+            ctx!.shadowBlur = 10;
+            ctx!.stroke();
+            ctx!.shadowBlur = 0;
+          });
+
+          // Rotation handle (above top center)
+          const rotHandleY = -hh - 30;
+          // Stem line
+          ctx!.beginPath();
+          ctx!.moveTo(0, -hh);
+          ctx!.lineTo(0, rotHandleY);
+          ctx!.strokeStyle = themeSelColor;
+          ctx!.lineWidth = 1;
+          ctx!.globalAlpha = 0.6;
+          ctx!.stroke();
+          ctx!.globalAlpha = 1;
+          // Rotation circle
+          ctx!.beginPath();
+          ctx!.arc(0, rotHandleY, 8, 0, Math.PI * 2);
+          ctx!.fillStyle = '#0c0e12';
+          ctx!.fill();
+          ctx!.beginPath();
+          ctx!.arc(0, rotHandleY, 8, 0, Math.PI * 2);
+          ctx!.strokeStyle = '#ffd000';
+          ctx!.lineWidth = 2;
+          ctx!.shadowColor = '#ffd000';
+          ctx!.shadowBlur = 12;
+          ctx!.stroke();
+          ctx!.shadowBlur = 0;
+          // Rotation icon
+          ctx!.beginPath();
+          ctx!.arc(0, rotHandleY, 4, -Math.PI * 0.3, Math.PI * 1.2);
+          ctx!.strokeStyle = '#ffd000';
+          ctx!.lineWidth = 1.5;
+          ctx!.stroke();
+
+          ctx!.restore();
+        } else {
+          mouseSelectionBoxRef.current = null;
+        }
+      } else {
+        mouseSelectionBoxRef.current = null;
+      }
+
       animId = requestAnimationFrame(render);
     }
     render();
@@ -822,9 +1069,40 @@ export default function App() {
           <div className="text-cyan-400 font-bold text-[10px] space-grotesk tracking-tighter">SINGULARITY</div>
         </div>
         <nav className="flex-1">
+          {/* Select tool */}
+          <div onClick={() => {
+            const next = inputMode === 'select' ? 'hand' : 'select';
+            setInputMode(next);
+            mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
+            if (next !== 'select') { mouseSelectedIdRef.current = null; mouseDragActiveRef.current = false; invalidateCache(); }
+            showToast(next === 'select' ? 'Select mode — click to select, drag to move/resize/rotate' : 'Hand tracking mode restored');
+          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'select' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
+            <span className="material-symbols-outlined mb-1">arrow_selector_tool</span>
+            <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Select</span>
+          </div>
           <div onClick={() => setActiveSidebarPanel(activeSidebarPanel === 'Brushes' ? null : 'Brushes')} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${activeSidebarPanel === 'Brushes' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
             <span className="material-symbols-outlined mb-1">brush</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Brushes</span>
+          </div>
+          {/* Mouse Draw toggle */}
+          <div onClick={() => {
+            const next = inputMode === 'mouse' ? 'hand' : 'mouse';
+            setInputMode(next);
+            mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
+            showToast(next === 'mouse' ? 'Mouse drawing enabled — click & drag to draw' : 'Hand tracking mode restored');
+          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'mouse' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
+            <span className="material-symbols-outlined mb-1">draw</span>
+            <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Mouse</span>
+          </div>
+          {/* Text tool */}
+          <div onClick={() => {
+            const next = inputMode === 'text' ? 'hand' : 'text';
+            setInputMode(next);
+            mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
+            showToast(next === 'text' ? 'Text tool active — click canvas to place text' : 'Hand tracking mode restored');
+          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'text' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
+            <span className="material-symbols-outlined mb-1">text_fields</span>
+            <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Text</span>
           </div>
           <div onClick={() => setActiveModal('Gestures')} className="text-slate-600 py-4 flex flex-col items-center justify-center hover:bg-white/5 hover:text-white transition-colors cursor-pointer group">
             <span className="material-symbols-outlined mb-1">gesture</span>
@@ -835,16 +1113,62 @@ export default function App() {
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Depth</span>
           </div>
           <div onClick={() => {
-            // Export from offscreen cache to avoid capturing a blank mid-frame canvas
-            const exportCanvas = offscreenCanvasRef.current ?? drawingCanvasRef.current;
+            const exportCanvas = drawingCanvasRef.current;
             if (exportCanvas) {
-              const url = exportCanvas.toDataURL('image/png');
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = 'kinetic-singularity-export.png';
-              a.click();
-              showToast('Canvas exported as PNG');
+              const bgCanvas = document.createElement('canvas');
+              bgCanvas.width = exportCanvas.width;
+              bgCanvas.height = exportCanvas.height;
+              const bctx = bgCanvas.getContext('2d');
+              if (bctx) {
+                bctx.fillStyle = '#0a0a0a';
+                bctx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+                
+                // Synchronously render all strokes directly onto the export canvas
+                bctx.save();
+                const cw = bgCanvas.width / 2;
+                const ch = bgCanvas.height / 2;
+                const t = globalTransformRef.current;
+                bctx.translate(cw, ch);
+                bctx.rotate((t.rotation * Math.PI) / 180);
+                bctx.scale(t.scale, t.scale);
+                bctx.translate(-cw, -ch);
+                
+                layersRef.current.filter(l => l.visible).forEach(layer => {
+                  layer.strokes.forEach(stroke => {
+                    if (stroke.points.length === 0) return;
+                    bctx.save();
+                    const { minX, minY, maxX, maxY } = stroke.bounds;
+                    const cx = minX + (maxX - minX) / 2;
+                    const cy = minY + (maxY - minY) / 2;
+                    bctx.translate(cx + stroke.translate.x, cy + stroke.translate.y);
+                    bctx.rotate((stroke.rotation * Math.PI) / 180);
+                    bctx.scale(stroke.scale, stroke.scale);
+                    bctx.translate(-cx, -cy);
+
+                    bctx.beginPath();
+                    bctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+                    for (let i = 1; i < stroke.points.length; i++) {
+                      bctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+                    }
+                    bctx.strokeStyle = stroke.color;
+                    bctx.lineWidth = stroke.thickness;
+                    bctx.lineCap = 'round';
+                    bctx.lineJoin = 'round';
+                    bctx.stroke();
+                    bctx.restore();
+                  });
+                });
+                bctx.restore();
+
+                const url = bgCanvas.toDataURL('image/png');
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'kinetic-singularity-export.png';
+                a.click();
+                showToast('Canvas exported as PNG');
+              }
             }
+
           }} className="text-slate-600 py-4 flex flex-col items-center justify-center hover:bg-white/5 hover:text-white transition-colors cursor-pointer group">
             <span className="material-symbols-outlined mb-1">ios_share</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Export</span>
@@ -866,9 +1190,271 @@ export default function App() {
 
       {/* Main Canvas Area */}
       <main className="ml-20 pt-16 h-screen w-[calc(100%-5rem)] relative overflow-hidden canvas-grid">
-        <div className="absolute inset-0 z-0 flex items-center justify-center pointer-events-none" style={{ perspective: '1200px' }}>
-          <canvas ref={drawingCanvasRef} id="drawing-canvas" className="w-full h-full origin-center" />
+        <div className="absolute inset-0 z-0 flex items-center justify-center" style={{ perspective: '1200px' }}>
+          <canvas
+            ref={drawingCanvasRef}
+            id="drawing-canvas"
+            className="w-full h-full origin-center"
+            style={{ cursor: inputMode === 'mouse' ? 'crosshair'
+              : inputMode === 'text' ? 'text'
+              : inputMode === 'select' ? mouseCursorStyle
+              : 'default' }}
+            onPointerDown={(e) => {
+              // Only handle primary button (left click)
+              if (e.button !== 0) return;
+              const canvasEl = e.currentTarget;
+              // ── Text mode ──
+              if (inputModeRef.current === 'text') {
+                const rect = canvasEl.getBoundingClientRect();
+                setTextInputPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+                setShowTextInput(true);
+                // autoFocus on <input> handles focus — no redundant setTimeout needed
+                return;
+              }
+              // ── Select mode ──
+              if (inputModeRef.current === 'select') {
+                const rect = canvasEl.getBoundingClientRect();
+                const sx = e.clientX - rect.left;
+                const sy = e.clientY - rect.top;
+
+                // Helper: transform screen point into the selected stroke's LOCAL space
+                // (inverse translate, then inverse rotate around box center)
+                const selStroke = mouseSelectedIdRef.current ? strokeIndexRef.current.get(mouseSelectedIdRef.current) : undefined;
+                if (selStroke && selStroke.points.length > 0) {
+                  const box = mouseSelectionBoxRef.current;
+                  if (box) {
+                    const { minX: bx1, minY: by1, maxX: bx2, maxY: by2 } = box;
+                    const bCx = (bx1 + bx2) / 2;
+                    const bCy = (by1 + by2) / 2;
+                    const hw = (bx2 - bx1) / 2;
+                    const hh = (by2 - by1) / 2;
+
+                    // Inverse-rotate click point around box center to account for stroke rotation
+                    const rotRad = -(selStroke.rotation * Math.PI) / 180;
+                    const dx0 = sx - bCx;
+                    const dy0 = sy - bCy;
+                    const lx = dx0 * Math.cos(rotRad) - dy0 * Math.sin(rotRad);
+                    const ly = dx0 * Math.sin(rotRad) + dy0 * Math.cos(rotRad);
+
+                    // Rotation handle hit-test (top center, 30px above box in local space)
+                    const rotHandleY = -hh - 30;
+                    if (Math.hypot(lx - 0, ly - rotHandleY) < 14) {
+                      setDragHandle('rotate');
+                      mouseDragStartRef.current = { x: sx, y: sy };
+                      mouseDragInitRotationRef.current = selStroke.rotation;
+                      mouseDragActiveRef.current = true;
+                      canvasEl.setPointerCapture(e.pointerId);
+                      return;
+                    }
+                    // Corner handle hit-tests (in local rotated space)
+                    const handleHitR = 12;
+                    const cornerMap: { handle: DragHandle; lx: number; ly: number }[] = [
+                      { handle: 'nw', lx: -hw, ly: -hh },
+                      { handle: 'ne', lx:  hw, ly: -hh },
+                      { handle: 'sw', lx: -hw, ly:  hh },
+                      { handle: 'se', lx:  hw, ly:  hh },
+                    ];
+                    for (const c of cornerMap) {
+                      if (Math.hypot(lx - c.lx, ly - c.ly) < handleHitR) {
+                        setDragHandle(c.handle as DragHandle);
+                        mouseDragStartRef.current = { x: sx, y: sy };
+                        mouseDragInitScaleRef.current = selStroke.scale;
+                        mouseDragActiveRef.current = true;
+                        canvasEl.setPointerCapture(e.pointerId);
+                        return;
+                      }
+                    }
+                    // Body drag (inside bounding box in local rotated space)
+                    if (lx >= -hw && lx <= hw && ly >= -hh && ly <= hh) {
+                      setDragHandle('body');
+                      mouseDragStartRef.current = { x: sx, y: sy };
+                      mouseDragInitTranslateRef.current = { ...selStroke.translate };
+                      mouseDragActiveRef.current = true;
+                      canvasEl.setPointerCapture(e.pointerId);
+                      return;
+                    }
+                  }
+                }
+
+                // Not on any handle — try to select a new stroke by proximity
+                if (visibleStrokesDirtyRef.current) rebuildStrokeIndex();
+                const allVisible = visibleStrokesRef.current;
+                let nearestId: string | null = null;
+                let nearestDist = 180;
+                for (const s of allVisible) {
+                  if (s.points.length === 0) continue;
+                  const d = Math.hypot(s.centroid.x + s.translate.x - sx, s.centroid.y + s.translate.y - sy);
+                  if (d < nearestDist) { nearestDist = d; nearestId = s.id; }
+                }
+                mouseSelectedIdRef.current = nearestId;
+                activeStrokeIdRef.current = nearestId;
+                setDragHandle(null);
+                mouseDragActiveRef.current = false;
+                invalidateCache();
+                return;
+              }
+              // ── Mouse draw mode ──
+              if (inputModeRef.current !== 'mouse') return;
+              const rect = canvasEl.getBoundingClientRect();
+              const sx = e.clientX - rect.left;
+              const sy = e.clientY - rect.top;
+              const activeLayer = layersRef.current.find(l => l.id === activeLayerIdRef.current)
+                ?? layersRef.current[layersRef.current.length - 1];
+              if (activeLayer.locked) return;
+              const newStroke: Stroke = {
+                id: `mouse-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                points: [{ x: sx, y: sy }],
+                color: brushColorRef.current,
+                thickness: brushThicknessRef.current,
+                scale: 1, rotation: 0, translate: { x: 0, y: 0 },
+                centroid: { x: sx, y: sy },
+                bounds: { minX: sx, minY: sy, maxX: sx, maxY: sy },
+                birthTime: performance.now(),
+              };
+              activeLayer.strokes.push(newStroke);
+              strokeIndexRef.current.set(newStroke.id, newStroke);
+              mouseStrokeIdRef.current = newStroke.id;
+              activeStrokeIdRef.current = newStroke.id;
+              mouseDrawingRef.current = true;
+              penDownRippleRef.current = { x: sx, y: sy, time: performance.now() };
+              invalidateCache();
+              canvasEl.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              // ── Select mode drag ──
+              if (inputModeRef.current === 'select' && mouseDragActiveRef.current) {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const sx = e.clientX - rect.left;
+                const sy = e.clientY - rect.top;
+                const selStroke = mouseSelectedIdRef.current ? strokeIndexRef.current.get(mouseSelectedIdRef.current) : undefined;
+                if (!selStroke) return;
+                const handle = mouseDragHandleRef.current;
+
+                if (handle === 'body') {
+                  // Move
+                  selStroke.translate.x = mouseDragInitTranslateRef.current.x + (sx - mouseDragStartRef.current.x);
+                  selStroke.translate.y = mouseDragInitTranslateRef.current.y + (sy - mouseDragStartRef.current.y);
+                  invalidateCache();
+                } else if (handle === 'rotate') {
+                  // Rotate based on angle from stroke center
+                  const box = mouseSelectionBoxRef.current;
+                  if (box) {
+                    const bCx = (box.minX + box.maxX) / 2;
+                    const bCy = (box.minY + box.maxY) / 2;
+                    const startAngle = Math.atan2(mouseDragStartRef.current.y - bCy, mouseDragStartRef.current.x - bCx);
+                    const curAngle = Math.atan2(sy - bCy, sx - bCx);
+                    const deltaAngle = (curAngle - startAngle) * (180 / Math.PI);
+                    selStroke.rotation = mouseDragInitRotationRef.current + deltaAngle;
+                    invalidateCache();
+                  }
+                } else if (handle === 'nw' || handle === 'ne' || handle === 'sw' || handle === 'se') {
+                  // Scale based on diagonal drag distance
+                  const box = mouseSelectionBoxRef.current;
+                  if (box) {
+                    const bCx = (box.minX + box.maxX) / 2;
+                    const bCy = (box.minY + box.maxY) / 2;
+                    const initDist = Math.hypot(mouseDragStartRef.current.x - bCx, mouseDragStartRef.current.y - bCy);
+                    const curDist = Math.hypot(sx - bCx, sy - bCy);
+                    if (initDist > 5) {
+                      const scaleFactor = curDist / initDist;
+                      selStroke.scale = Math.max(0.05, Math.min(12, mouseDragInitScaleRef.current * scaleFactor));
+                      invalidateCache();
+                    }
+                  }
+                }
+                return;
+              }
+              // ── Mouse draw ──
+              if (!mouseDrawingRef.current || inputModeRef.current !== 'mouse') return;
+              const rect = e.currentTarget.getBoundingClientRect();
+              const sx = e.clientX - rect.left;
+              const sy = e.clientY - rect.top;
+              const stroke = strokeIndexRef.current.get(mouseStrokeIdRef.current ?? '');
+              if (!stroke) return;
+              const prevPt = stroke.points[stroke.points.length - 1];
+              if (Math.hypot(prevPt.x - sx, prevPt.y - sy) > 1.5) {
+                stroke.points.push({ x: sx, y: sy });
+                const b = stroke.bounds;
+                if (sx < b.minX) b.minX = sx;
+                if (sy < b.minY) b.minY = sy;
+                if (sx > b.maxX) b.maxX = sx;
+                if (sy > b.maxY) b.maxY = sy;
+              }
+            }}
+            onPointerUp={() => {
+              // ── Select mode end drag ──
+              if (inputModeRef.current === 'select' && mouseDragActiveRef.current) {
+                mouseDragActiveRef.current = false;
+                setDragHandle(null);
+                invalidateCache();
+                return;
+              }
+              // ── Mouse draw finalize ──
+              if (mouseDrawingRef.current && inputModeRef.current === 'mouse') {
+                const stroke = strokeIndexRef.current.get(mouseStrokeIdRef.current ?? '');
+                if (stroke) {
+                  // Consistent point decimation for mouse drawing
+                  if (stroke.points.length > 20) {
+                    stroke.points = decimatePoints(stroke.points, 1.0);
+                  }
+                  stroke.centroid = computeCentroid(stroke.points);
+                  stroke.bounds = computeBounds(stroke.points);
+                }
+                mouseDrawingRef.current = false;
+                invalidateCache();
+
+              }
+            }}
+          />
         </div>
+
+        {/* Text Input Overlay */}
+        {showTextInput && (
+          <div
+            className="absolute z-40"
+            style={{ left: textInputPos.x, top: textInputPos.y }}
+          >
+            <input
+              ref={textInputRef}
+              type="text"
+              placeholder="Type text…"
+              autoFocus
+              className="bg-black/80 border border-primary/60 text-primary px-4 py-2 text-lg font-space-grotesk outline-none shadow-[0_0_30px_rgba(143,245,255,0.2)] min-w-[200px]"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+                  const text = e.currentTarget.value.trim();
+                  const activeLayer = layersRef.current.find(l => l.id === activeLayerIdRef.current)
+                    ?? layersRef.current[layersRef.current.length - 1];
+                  if (!activeLayer.locked) {
+                    const pts = textToPoints(text, textInputPos.x, textInputPos.y, 48);
+                    if (pts.length > 0) {
+                      const newStroke: Stroke = {
+                        id: `text-${Date.now()}`,
+                        points: pts,
+                        color: brushColorRef.current,
+                        thickness: 2,
+                        scale: 1, rotation: 0, translate: { x: 0, y: 0 },
+                        centroid: computeCentroid(pts),
+                        bounds: computeBounds(pts),
+                        birthTime: performance.now(),
+                      };
+                      activeLayer.strokes.push(newStroke);
+                      strokeIndexRef.current.set(newStroke.id, newStroke);
+                      activeStrokeIdRef.current = newStroke.id;
+                      invalidateCache();
+                      syncLayersState();
+                      showToast(`Text "${text}" placed on canvas`);
+                    }
+                  }
+                  setShowTextInput(false);
+                } else if (e.key === 'Escape') {
+                  setShowTextInput(false);
+                }
+              }}
+              onBlur={() => setShowTextInput(false)}
+            />
+          </div>
+        )}
         
         {/* Global Status Bar */}
         <div className="absolute bottom-8 left-8 flex items-center gap-6 z-20">
@@ -906,9 +1492,10 @@ export default function App() {
           <div className="h-4"></div>
           <button onClick={() => {
             selectAllModeRef.current = !selectAllModeRef.current;
+            setSelectAllModeState(selectAllModeRef.current);
             invalidateCache();
             showToast(selectAllModeRef.current ? 'Selected all strokes' : 'Deselected all strokes');
-          }} className={`w-12 h-12 glass-panel flex items-center justify-center transition-all group ${selectAllModeRef.current ? 'text-primary border-primary/40 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'text-on-surface-variant border-white/10'}`}>
+          }} className={`w-12 h-12 glass-panel flex items-center justify-center transition-all group ${selectAllModeState ? 'text-primary border-primary/40 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'text-on-surface-variant border-white/10'}`}>
             <span className="material-symbols-outlined group-active:scale-90 transition-transform">select_all</span>
           </button>
           <button onClick={() => {
@@ -925,7 +1512,8 @@ export default function App() {
         {/* Webcam Setup & HUD */}
         <div className="absolute bottom-8 right-8 w-64 aspect-video glass-panel overflow-hidden border border-white/10 z-20">
           <div className="absolute inset-0 bg-zinc-900/60 z-0 flex items-center justify-center text-white/50 text-xs text-center p-2">
-            {!isReady && "Loading AI Models..."}
+            {!isReady && !error && "Loading AI Models..."}
+            {error && <span className="text-red-500 font-bold bg-red-500/10 px-2 py-1 rounded">{error}</span>}
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover mix-blend-luminosity opacity-40 -scale-x-100"></video>
             <canvas ref={hudCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none object-cover -scale-x-100"></canvas>
           </div>
@@ -933,8 +1521,8 @@ export default function App() {
           <div className="absolute inset-0 z-10 p-3 flex flex-col justify-between pointer-events-none">
             <div className="flex justify-between items-start">
               <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 ${isReady ? 'bg-error' : 'bg-primary'} rounded-full animate-pulse`}></div>
-                <span className="text-[10px] font-label text-on-surface uppercase tracking-widest">{isReady ? 'Live Feed' : 'Initializing'}</span>
+                <div className={`w-2 h-2 ${error ? 'bg-red-500' : isReady ? 'bg-error' : 'bg-primary'} rounded-full ${error ? '' : 'animate-pulse'}`}></div>
+                <span className={`text-[10px] font-label ${error ? 'text-red-500' : 'text-on-surface'} uppercase tracking-widest`}>{error ? 'CAM ERROR' : isReady ? 'Live Feed' : 'Initializing'}</span>
               </div>
             </div>
             {(() => {
@@ -971,81 +1559,14 @@ export default function App() {
         </div>
 
         {/* Dynamic Modals & Overlays */}
-        {activeModal === 'Settings' && (() => {
-          // Local draft state so changes only apply on "Apply"
-          let draftQuality = 'balanced';
-          let draftTheme: ThemeId = activeTheme;
-          let draftSmoothing = 50;
-          return (
-            <div className="absolute inset-0 bg-black/60 z-50 flex items-center justify-center backdrop-blur-sm">
-               <div className="glass-panel p-8 max-w-md w-full relative border border-primary/20 shadow-[0_0_80px_rgba(143,245,255,0.1)]">
-                 <button onClick={() => setActiveModal(null)} className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors"><span className="material-symbols-outlined">close</span></button>
-                 <h2 className="text-xl font-space-grotesk text-primary mb-6 tracking-widest uppercase">System Settings</h2>
-                 <div className="space-y-4 text-sm text-white/70">
-                   <div className="flex justify-between items-center bg-white/5 p-4 rounded border border-white/5">
-                      <div>
-                        <label className="font-space-grotesk tracking-wide text-xs uppercase block">Tracking Engine</label>
-                        <span className="text-[10px] text-white/30">Hand detection performance mode</span>
-                      </div>
-                      <select
-                        defaultValue={'balanced'}
-                        onChange={(e) => { draftQuality = e.target.value as typeof draftQuality; }}
-                        className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded px-2 py-1 text-xs"
-                      >
-                        <option value="high">High Perf</option>
-                        <option value="balanced">Balanced</option>
-                        <option value="economy">Economy</option>
-                      </select>
-                   </div>
-                   <div className="flex justify-between items-center bg-white/5 p-4 rounded border border-white/5">
-                      <div>
-                        <label className="font-space-grotesk tracking-wide text-xs uppercase block">Hand Smoothing</label>
-                        <span className="text-[10px] text-white/30">EMA filter strength (higher = smoother)</span>
-                      </div>
-                      <div className="flex items-center gap-2 w-1/2">
-                        <input
-                          id="smoothing-range"
-                          type="range" min="0" max="100" defaultValue="50"
-                          className="flex-1 accent-primary"
-                          onChange={(e) => { draftSmoothing = parseInt(e.target.value); }}
-                        />
-                        <span id="smoothing-val" className="text-[10px] text-white/40 w-6">50</span>
-                      </div>
-                   </div>
-                   <div className="flex justify-between items-center bg-white/5 p-4 rounded border border-white/5">
-                      <div>
-                        <label className="font-space-grotesk tracking-wide text-xs uppercase block">UI Theme</label>
-                        <span className="text-[10px] text-white/30">Color accent for the interface</span>
-                      </div>
-                      <select
-                        defaultValue={activeTheme}
-                        onChange={(e) => { draftTheme = e.target.value as ThemeId; }}
-                        className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded px-2 py-1 text-xs"
-                      >
-                        <option value="holo-blue">Holo Blue</option>
-                        <option value="crimson">Crimson</option>
-                      </select>
-                   </div>
-                 </div>
-                 <button
-                   onClick={() => {
-                     // trackingQuality: no runtime effect yet
-                     void draftQuality;
-                     applyTheme(draftTheme);
-                     // Update smoothing slider label
-                     const el = document.getElementById('smoothing-val');
-                     if (el) el.textContent = String(draftSmoothing);
-                     showToast('Settings applied successfully.');
-                     setActiveModal(null);
-                   }}
-                   className="mt-8 w-full bg-primary/20 hover:bg-primary text-primary hover:text-background border border-primary font-space-grotesk tracking-widest text-xs py-3 transition-colors uppercase"
-                 >
-                   Apply Changes
-                 </button>
-               </div>
-            </div>
-          );
-        })()}
+        {activeModal === 'Settings' && (
+          <SettingsModal
+            activeTheme={activeTheme}
+            applyTheme={applyTheme}
+            showToast={showToast}
+            closeModal={() => setActiveModal(null)}
+          />
+        )}
         
         {activeModal === 'History' && (() => {
           const allStrokes = layersRef.current.flatMap(l => l.strokes);
@@ -1091,7 +1612,7 @@ export default function App() {
                  </div>
                  <div className="p-5 bg-white/5 rounded border border-white/5 hover:border-primary/30 transition-colors">
                     <strong className="text-secondary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Right Fist</strong>
-                    <span className="text-white/60">Flash clear the entire canvas immediately</span>
+                    <span className="text-white/60">Clear all strokes on the active layer</span>
                  </div>
                  <div className="p-5 bg-white/5 rounded border border-white/5 hover:border-primary/30 transition-colors">
                     <strong className="text-primary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Right Pinch</strong>
@@ -1127,18 +1648,7 @@ export default function App() {
         )}
 
         {activeSidebarPanel === 'Depth' && (
-          <div className="absolute left-24 top-1/2 -translate-y-1/2 glass-panel p-5 z-40 w-56 border border-primary/20 slide-in-from-left animate-in duration-300">
-             <div className="flex justify-between items-center border-b border-white/5 pb-3 mb-4">
-                 <h3 className="text-[10px] uppercase tracking-widest font-space-grotesk text-primary opacity-60">Stroke Thickness</h3>
-                 <span className="text-xs text-white/50">{brushThicknessRef.current}px</span>
-             </div>
-             <input type="range" min="1" max="30" defaultValue={brushThicknessRef.current} className="w-full h-1 bg-white/20 rounded outline-none appearance-none accent-primary" 
-              onChange={(e) => { 
-                brushThicknessRef.current = parseInt(e.target.value); 
-                e.target.previousElementSibling!.lastElementChild!.textContent = `${e.target.value}px`; 
-              }} 
-             />
-          </div>
+          <DepthPanel brushThicknessRef={brushThicknessRef} />
         )}
 
         {/* Top Tab Content Sections */}
@@ -1229,12 +1739,6 @@ export default function App() {
                    <h3 className="text-xs uppercase font-space-grotesk text-white/70 tracking-widest">Asset Library</h3>
                    <p className="text-[10px] text-white/30 mt-1">Click any shape node to embed it into the active layer</p>
                  </div>
-                 <button
-                   onClick={() => showToast('Asset library synced — all nodes up to date.')}
-                   className="flex items-center gap-1 text-xs border border-primary/30 text-primary px-4 py-1.5 hover:bg-primary/10 transition-colors uppercase font-space-grotesk tracking-wider"
-                 >
-                   <span className="material-symbols-outlined text-sm">cloud_sync</span>Sync
-                 </button>
              </div>
              <div className="grid grid-cols-5 gap-4 flex-1">
                 {[
@@ -1252,7 +1756,32 @@ export default function App() {
                   <div
                     key={label}
                     className="aspect-square bg-white/5 border border-white/10 rounded flex flex-col items-center justify-center hover:border-primary/50 hover:bg-primary/5 hover:-translate-y-1 transition-all cursor-pointer group"
-                    onClick={() => showToast(`${label} embedded into active layer.`)}
+                    onClick={() => {
+                      const activeLayer = layersRef.current.find(l => l.id === activeLayerIdRef.current)
+                        ?? layersRef.current[layersRef.current.length - 1];
+                      if (activeLayer.locked) { showToast('Active layer is locked'); return; }
+                      const canvas = drawingCanvasRef.current;
+                      const cx = canvas ? canvas.width / 2 : 500;
+                      const cy = canvas ? canvas.height / 2 : 400;
+                      const pts = generateShapePoints(icon, cx, cy, 80);
+                      if (pts.length === 0) return;
+                      const newStroke: Stroke = {
+                        id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                        points: pts,
+                        color: brushColorRef.current,
+                        thickness: brushThicknessRef.current,
+                        scale: 1, rotation: 0, translate: { x: 0, y: 0 },
+                        centroid: computeCentroid(pts),
+                        bounds: computeBounds(pts),
+                        birthTime: performance.now(),
+                      };
+                      activeLayer.strokes.push(newStroke);
+                      strokeIndexRef.current.set(newStroke.id, newStroke);
+                      activeStrokeIdRef.current = newStroke.id;
+                      invalidateCache();
+                      syncLayersState();
+                      showToast(`${label} embedded into active layer`);
+                    }}
                   >
                      <span className="material-symbols-outlined text-5xl text-white/20 mb-3 group-hover:text-primary transition-colors">{icon}</span>
                      <span className="text-[10px] text-white/40 tracking-wider font-mono group-hover:text-white/70 transition-colors">{label}</span>
