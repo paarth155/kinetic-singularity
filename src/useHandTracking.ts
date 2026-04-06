@@ -64,7 +64,7 @@ export function useHandTracking(
           baseOptions: {
             modelAssetPath:
               'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-            delegate: config.quality === 'economy' ? 'CPU' : 'GPU',
+            delegate: configRef.current.quality === 'economy' ? 'CPU' : 'GPU',
           },
           runningMode: 'VIDEO',
           numHands: 2,
@@ -90,7 +90,7 @@ export function useHandTracking(
       active = false;
       if (landmarkerRef.current) landmarkerRef.current.close();
     };
-  }, [config.quality]);
+  }, []);
 
   // ─── Tracking Loop ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -98,9 +98,6 @@ export function useHandTracking(
 
     const video = videoRef.current;
     let lastVideoTime = -1;
-
-    // Tracking state for robust spatial handedness assignment across frames
-    const lastKnownCentroids: Record<string, {x: number, y: number} | null> = { Left: null, Right: null };
 
     // Per-hand smoothed landmark history for the EMA filter
     const smoothed: Record<string, Landmark[]> = {};
@@ -384,68 +381,11 @@ export function useHandTracking(
             const smoothedByHand: Record<string, Landmark[]>  = {};
             const gestureByHand:  Record<string, Gesture>     = {};
 
-            // ─── Spatial Tracking Handedness Fix ───
-            const currentHandsInfo = results.landmarks.map((rawLm, i) => {
-              const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
-              const cy = rawLm.reduce((sum, p) => sum + p.y, 0) / rawLm.length;
+            const newHands: HandState[] = results.landmarks.map((rawLm, i) => {
+              // Defensive access: MediaPipe sometimes drops handedness data even when landmarks are found
               const rawLabel = results.handednesses?.[i]?.[0]?.categoryName || 'Right';
               // Mirror: MediaPipe 'Right' in the flipped webcam image = user's Left hand
-              const proposedHand = rawLabel === 'Right' ? 'Left' : 'Right';
-              return { rawLm, cx, cy, proposedHand, assigned: null as string | null };
-            });
-
-            const unassignedPrev = new Set(['Left', 'Right']);
-
-            // Resolve conflicts if ML prediction is identical for 2 hands
-            if (currentHandsInfo.length === 2 && currentHandsInfo[0].proposedHand === currentHandsInfo[1].proposedHand) {
-              const rightIdx = currentHandsInfo[0].cx < currentHandsInfo[1].cx ? 0 : 1;
-              currentHandsInfo[rightIdx].proposedHand = 'Right';
-              currentHandsInfo[1 - rightIdx].proposedHand = 'Left';
-            }
-
-            // Pass A: Distance matching (< 0.2 screen ratio radius) prevents flickering mid-stroke
-            for (const curr of currentHandsInfo) {
-              let bestMatch: string | null = null;
-              let bestDist = 0.2;
-              for (const prev of unassignedPrev) {
-                const pCenter = lastKnownCentroids[prev];
-                if (pCenter) {
-                  const d = Math.hypot(curr.cx - pCenter.x, curr.cy - pCenter.y);
-                  if (d < bestDist) {
-                    bestDist = d;
-                    bestMatch = prev;
-                  }
-                }
-              }
-              if (bestMatch) {
-                curr.assigned = bestMatch;
-                unassignedPrev.delete(bestMatch);
-              }
-            }
-
-            // Pass B: Use MediaPipe's proposed hand for remaining
-            for (const curr of currentHandsInfo) {
-              if (!curr.assigned) {
-                if (unassignedPrev.has(curr.proposedHand)) {
-                  curr.assigned = curr.proposedHand;
-                  unassignedPrev.delete(curr.proposedHand);
-                } else if (unassignedPrev.size > 0) {
-                  const remaining = Array.from(unassignedPrev)[0];
-                  curr.assigned = remaining;
-                  unassignedPrev.delete(remaining);
-                } else {
-                  curr.assigned = curr.proposedHand; // fallback, usually overridden
-                }
-              }
-            }
-
-            // Update centroids
-            currentHandsInfo.forEach(curr => {
-              if (curr.assigned) lastKnownCentroids[curr.assigned] = { x: curr.cx, y: curr.cy };
-            });
-
-            const newHands: HandState[] = currentHandsInfo.map(({ rawLm, assigned }) => {
-              const hand = assigned as 'Left' | 'Right';
+              const hand   = rawLabel === 'Right' ? 'Left' : 'Right';
               lostHandFrames[hand] = 0;
               activeHands.add(hand);
 
@@ -463,7 +403,7 @@ export function useHandTracking(
 
               return {
                 landmarks:  lm,
-                handedness: hand,
+                handedness: hand as 'Left' | 'Right',
                 gesture:    stableGesture,
                 pinchRatio,
               };
@@ -475,7 +415,7 @@ export function useHandTracking(
             handsRef.current = [];
           }
 
-          // Soft clear smoothed + history + centroids for hands that left the frame (5-frame grace period)
+          // Soft clear smoothed + history for hands that left the frame (5-frame grace period)
           for (const hand of ['Left', 'Right']) {
             if (!activeHands.has(hand)) {
               lostHandFrames[hand] = (lostHandFrames[hand] || 0) + 1;
@@ -483,7 +423,6 @@ export function useHandTracking(
                 delete smoothed[hand];
                 pinchActive[hand]    = false;
                 gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0 };
-                lastKnownCentroids[hand] = null;
               }
             }
           }
