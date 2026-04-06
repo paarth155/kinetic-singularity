@@ -12,15 +12,22 @@ export type HandState = {
   pinchRatio: number; // expose raw ratio for App.tsx to use for scaling
 };
 
+export type HandTrackingConfig = {
+  quality: 'high' | 'balanced' | 'economy';
+  smoothing: number; // 0-100
+};
+
 // MediaPipe landmark indices for reference
 // 0=wrist 1-4=thumb 5-8=index 9-12=middle 13-16=ring 17-20=pinky
 // MCP=knuckle, PIP=first joint, DIP=second joint, TIP=tip
 
 export function useHandTracking(
   videoRef: React.RefObject<HTMLVideoElement | null>,
-  canvasRef: React.RefObject<HTMLCanvasElement | null>
+  canvasRef: React.RefObject<HTMLCanvasElement | null>,
+  config: HandTrackingConfig
 ) {
   const [isReady, setIsReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // ── Hot refs: updated synchronously inside MediaPipe loop, never go through React ──
   const handsRef = useRef<HandState[]>([]);
@@ -39,31 +46,42 @@ export function useHandTracking(
   const landmarkerRef = useRef<HandLandmarker | null>(null);
   const drawingUtilsRef = useRef<DrawingUtils | null>(null);
   const requestRef = useRef<number>(0);
+  const configRef = useRef<HandTrackingConfig>(config);
+
+  // Keep ref up to date for the non-React detection loop
+  useEffect(() => { configRef.current = config; }, [config]);
 
   // ─── Model Init ───────────────────────────────────────────────────────────
   useEffect(() => {
     let active = true;
 
     async function init() {
-      const vision = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm'
-      );
-      const landmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath:
-            'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-          delegate: 'GPU',
-        },
-        runningMode: 'VIDEO',
-        numHands: 2,
-        // Balanced confidence: low enough to detect reliably, high enough to reject ghosts
-        minHandDetectionConfidence: 0.6,
-        minHandPresenceConfidence: 0.6,
-        minTrackingConfidence: 0.6,
-      });
-      if (active) {
-        landmarkerRef.current = landmarker;
-        setIsReady(true);
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm'
+        );
+        const landmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            delegate: configRef.current.quality === 'economy' ? 'CPU' : 'GPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 2,
+          // Balanced confidence: low enough to detect reliably, high enough to reject ghosts
+          minHandDetectionConfidence: 0.6,
+          minHandPresenceConfidence: 0.6,
+          minTrackingConfidence: 0.6,
+        });
+        if (active) {
+          landmarkerRef.current = landmarker;
+          setIsReady(true);
+        }
+      } catch (err) {
+        console.error('MediaPipe model failed to load:', err);
+        if (active) {
+          setError('AI model failed to load. Check your internet connection and reload.');
+        }
       }
     }
     init();
@@ -120,6 +138,17 @@ export function useHandTracking(
         streamRef.current = stream;
         video.srcObject = stream;
         video.addEventListener('loadeddata', predictWebcam);
+      })
+      .catch((err: unknown) => {
+        console.error('Webcam failed to initialize:', err);
+        const name = (err instanceof Error) ? err.name : '';
+        if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+          setError('Camera access denied. Please allow camera permission and reload.');
+        } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+          setError('No camera found. Please connect a webcam and reload.');
+        } else {
+          setError('Camera unavailable. It may be in use by another app.');
+        }
       });
 
     // ── Helpers ─────────────────────────────────────────────────────────────
@@ -244,8 +273,13 @@ export function useHandTracking(
         // Use aspect-corrected deltas ONLY for velocity calculation, not position update
         const speed = Math.hypot(rawDx * aspect, rawDy); // normalised [0..~0.1]
 
-        // Remap speed to alpha: still→0.18 (heavy smoothing), fast→0.80 (very responsive)
-        const alpha = Math.min(0.80, Math.max(0.18, speed * 18.0));
+        // Remap speed to alpha: still→base (heavy smoothing), fast→target (responsive)
+        // smoothing 0   => base 0.50 (low smoothing), target 0.90 (high response)
+        // smoothing 100 => base 0.05 (high smoothing), target 0.70 (low response)
+        const s = configRef.current.smoothing / 100;
+        const baseAlpha = 0.50 - (s * 0.45);   // [0.50 .. 0.05]
+        const targetAlpha = 0.90 - (s * 0.20); // [0.90 .. 0.70]
+        const alpha = Math.min(targetAlpha, Math.max(baseAlpha, speed * 18.0));
 
         return {
           x: prev.x + alpha * rawDx,
@@ -436,5 +470,5 @@ export function useHandTracking(
     };
   }, [isReady, videoRef, canvasRef]);
 
-  return { hands: handsDisplay, handsRef, isReady, latency };
+  return { hands: handsDisplay, handsRef, isReady, latency, error };
 }

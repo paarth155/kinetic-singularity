@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { useHandTracking } from './useHandTracking';
+import { useHandTracking, type HandTrackingConfig } from './useHandTracking';
 
 import {
   type Vector2,
@@ -23,10 +23,24 @@ const DEFAULT_LAYER: Layer = { id: 'layer-1', name: 'Layer 1', visible: true, lo
 
 type ThemeId = 'holo-blue' | 'crimson';
 
-function SettingsModal({ activeTheme, applyTheme, closeModal, showToast }: { activeTheme: ThemeId, applyTheme: (t: ThemeId) => void, closeModal: () => void, showToast: (m: string) => void }) {
-  const [draftQuality, setDraftQuality] = useState('balanced');
+function SettingsModal({ 
+  activeTheme, 
+  applyTheme, 
+  closeModal, 
+  showToast,
+  trackingConfig,
+  setTrackingConfig
+}: { 
+  activeTheme: ThemeId, 
+  applyTheme: (t: ThemeId) => void, 
+  closeModal: () => void, 
+  showToast: (m: string) => void,
+  trackingConfig: HandTrackingConfig,
+  setTrackingConfig: (c: HandTrackingConfig) => void
+}) {
+  const [draftQuality, setDraftQuality] = useState(trackingConfig.quality);
   const [draftTheme, setDraftTheme] = useState<ThemeId>(activeTheme);
-  const [draftSmoothing, setDraftSmoothing] = useState(50);
+  const [draftSmoothing, setDraftSmoothing] = useState(trackingConfig.smoothing);
   return (
     <div className="absolute inset-0 bg-black/60 z-50 flex items-center justify-center backdrop-blur-sm">
        <div className="glass-panel p-8 max-w-md w-full relative border border-primary/20 shadow-[0_0_80px_rgba(143,245,255,0.1)]">
@@ -40,7 +54,7 @@ function SettingsModal({ activeTheme, applyTheme, closeModal, showToast }: { act
               </div>
               <select
                 value={draftQuality}
-                onChange={(e) => setDraftQuality(e.target.value)}
+                onChange={(e) => setDraftQuality(e.target.value as HandTrackingConfig['quality'])}
                 className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded px-2 py-1 text-xs"
               >
                 <option value="high">High Perf</option>
@@ -77,16 +91,17 @@ function SettingsModal({ activeTheme, applyTheme, closeModal, showToast }: { act
               </select>
            </div>
          </div>
-         <button
-           onClick={() => {
-             applyTheme(draftTheme);
-             showToast(`Theme changed to ${draftTheme === 'crimson' ? 'Crimson' : 'Holo Blue'}.`);
-             closeModal();
-           }}
-           className="mt-8 w-full bg-primary/20 hover:bg-primary text-primary hover:text-background border border-primary font-space-grotesk tracking-widest text-xs py-3 transition-colors uppercase"
-         >
-           Apply Changes
-         </button>
+          <button
+            onClick={() => {
+              applyTheme(draftTheme);
+              setTrackingConfig({ quality: draftQuality, smoothing: draftSmoothing });
+              showToast(`Settings applied: ${draftTheme} theme, ${draftQuality} engine.`);
+              closeModal();
+            }}
+            className="mt-8 w-full bg-primary/20 hover:bg-primary text-primary hover:text-background border border-primary font-space-grotesk tracking-widest text-xs py-3 transition-colors uppercase"
+          >
+            Apply Changes
+          </button>
        </div>
     </div>
   );
@@ -135,7 +150,8 @@ export default function App() {
       for (const stroke of layer.strokes) {
         map.set(stroke.id, stroke);
       }
-      if (layer.visible) {
+      // visibleStrokesRef stores interactive strokes (visible AND unlocked)
+      if (layer.visible && !layer.locked) {
         for (const stroke of layer.strokes) {
           visible.push(stroke);
         }
@@ -146,7 +162,8 @@ export default function App() {
     visibleStrokesDirtyRef.current = false;
   }, []);
   
-  const { hands, handsRef, isReady, latency, error } = useHandTracking(videoRef, hudCanvasRef);
+  const [trackingConfig, setTrackingConfig] = useState<HandTrackingConfig>({ quality: 'balanced', smoothing: 50 });
+  const { hands, handsRef, isReady, latency, error } = useHandTracking(videoRef, hudCanvasRef, trackingConfig);
   
   // ─── Layer system ───────────────────────────────────────────────────────────
   // layersRef is the mutable source-of-truth used in the RAF loop.
@@ -184,6 +201,10 @@ export default function App() {
   const toggleLayerVisibility = (id: string) => {
     const layer = layersRef.current.find(l => l.id === id);
     if (layer) { layer.visible = !layer.visible; invalidateCache(); syncLayersState(); }
+  };
+  const toggleLayerLock = (id: string) => {
+    const layer = layersRef.current.find(l => l.id === id);
+    if (layer) { layer.locked = !layer.locked; syncLayersState(); }
   };
 
   const renameLayer = (id: string, name: string) => {
@@ -576,10 +597,11 @@ export default function App() {
 
           currentMode = 'Clear Canvas';
           // Clear only the active layer
-          if (activeLayer.strokes.length > 0) {
+          if (activeLayer.strokes.length > 0 && !activeLayer.locked) {
             activeLayer.strokes = [];
             newActiveStrokeId = null;
             invalidateCache();
+            syncLayersState();
           }
         } else if (rightHand.gesture === 'Pinch' && inputModeRef.current === 'hand') {
 
@@ -612,6 +634,7 @@ export default function App() {
           }
           invalidateCache();
           rightWasPointing.current = false;
+          syncLayersState();
         }
       } else {
         // Right hand left the frame — finalize any in-progress stroke
@@ -625,6 +648,7 @@ export default function App() {
             finishedStroke.bounds = computeBounds(finishedStroke.points);
           }
           invalidateCache();
+          syncLayersState();
         }
         rightWasPointing.current = false;
         cursorRef.current.visible = false;
@@ -1402,7 +1426,7 @@ export default function App() {
                 }
                 mouseDrawingRef.current = false;
                 invalidateCache();
-
+                syncLayersState();
               }
             }}
           />
@@ -1565,6 +1589,8 @@ export default function App() {
             applyTheme={applyTheme}
             showToast={showToast}
             closeModal={() => setActiveModal(null)}
+            trackingConfig={trackingConfig}
+            setTrackingConfig={setTrackingConfig}
           />
         )}
         
@@ -1691,6 +1717,17 @@ export default function App() {
                     >
                       <span className="material-symbols-outlined text-base">
                         {layer.visible ? 'visibility' : 'visibility_off'}
+                      </span>
+                    </button>
+
+                    {/* Lock icon - lock toggle */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleLayerLock(layer.id); }}
+                      className={`${layer.locked ? 'text-primary/70' : 'text-white/40'} hover:text-primary transition-colors shrink-0`}
+                      title={layer.locked ? 'Unlock layer' : 'Lock layer'}
+                    >
+                      <span className="material-symbols-outlined text-base">
+                        {layer.locked ? 'lock' : 'lock_open'}
                       </span>
                     </button>
 

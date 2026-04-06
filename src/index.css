@@ -142,4 +142,9 @@ html[data-theme="crimson"] {
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background: rgba(var(--theme-accent-hex, 143 245 255) / 0.45);
   }
+
+  /* Reset vertical-align on block elements to avoid redundant-prop warnings */
+  img, svg, video, canvas, audio, iframe, embed, object {
+    vertical-align: unset;
+  }
 }
