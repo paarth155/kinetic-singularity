@@ -418,28 +418,6 @@ export default function App() {
         }
       }
 
-      // Build the path
-      targetCtx.beginPath();
-      if (stroke.points.length > 0) {
-        targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
-        if (stroke.points.length < 3) {
-          stroke.points.forEach((p, idx) => {
-            if (idx > 0) targetCtx.lineTo(p.x, p.y);
-          });
-        } else {
-          let i = 1;
-          for (; i < stroke.points.length - 2; i++) {
-            const xc = (stroke.points[i].x + stroke.points[i + 1].x) / 2;
-            const yc = (stroke.points[i].y + stroke.points[i + 1].y) / 2;
-            targetCtx.quadraticCurveTo(stroke.points[i].x, stroke.points[i].y, xc, yc);
-          }
-          targetCtx.quadraticCurveTo(
-            stroke.points[i].x, stroke.points[i].y,
-            stroke.points[i + 1].x, stroke.points[i + 1].y
-          );
-        }
-      }
-
       targetCtx.lineCap = 'round';
       targetCtx.lineJoin = 'round';
 
@@ -447,28 +425,108 @@ export default function App() {
       const strokeAge = stroke.birthTime ? performance.now() - stroke.birthTime : Infinity;
       const birthProgress = Math.min(1, strokeAge / 500);
       const birthEase = birthProgress < 1 ? 0.3 + 0.7 * birthProgress * (2 - birthProgress) : 1;
-      const birthThickness = stroke.thickness * birthEase;
+      const baseThickness = stroke.thickness * birthEase;
 
-      // 1. Outer ambient glow
-      targetCtx.strokeStyle = stroke.color;
-      targetCtx.lineWidth = birthThickness * 1.5;
-      targetCtx.shadowColor = stroke.color;
-      targetCtx.shadowBlur = 25 * birthEase;
-      targetCtx.globalAlpha = 0.5 * birthEase;
-      targetCtx.stroke();
+      // Draw stroke with dynamic variable thickness based on segment velocity
+      if (stroke.points.length > 0) {
+        if (stroke.points.length < 3) {
+           // Fallback for tiny dots: solid path
+           targetCtx.beginPath();
+           targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+           stroke.points.forEach((p, idx) => { if (idx > 0) targetCtx.lineTo(p.x, p.y); });
+           
+           // 1. Ambient glow
+           targetCtx.strokeStyle = stroke.color;
+           targetCtx.lineWidth = baseThickness * 1.5;
+           targetCtx.shadowColor = stroke.color;
+           targetCtx.shadowBlur = 25 * birthEase;
+           targetCtx.globalAlpha = 0.5 * birthEase;
+           targetCtx.stroke();
+           // 2. Main neon body
+           targetCtx.lineWidth = baseThickness;
+           targetCtx.shadowBlur = 10 * birthEase;
+           targetCtx.globalAlpha = 0.8 * birthEase;
+           targetCtx.stroke();
+           // 3. Bright inner core
+           if (baseThickness > 4) {
+             targetCtx.strokeStyle = '#ffffff';
+             targetCtx.lineWidth = baseThickness * 0.3;
+             targetCtx.shadowBlur = 2;
+             targetCtx.globalAlpha = birthEase;
+             targetCtx.stroke();
+           }
+        } else {
+           // Segment-by-segment drawing for dynamic width
+           for (let layer = 0; layer < 3; layer++) {
+             targetCtx.save();
+             
+             if (layer === 0) {
+                 targetCtx.strokeStyle = stroke.color;
+                 targetCtx.shadowColor = stroke.color;
+                 targetCtx.shadowBlur = 25 * birthEase;
+                 targetCtx.globalAlpha = 0.5 * birthEase;
+             } else if (layer === 1) {
+                 targetCtx.strokeStyle = stroke.color;
+                 targetCtx.shadowColor = stroke.color;
+                 targetCtx.shadowBlur = 10 * birthEase;
+                 targetCtx.globalAlpha = 0.8 * birthEase;
+             } else {
+                 if (baseThickness <= 4) { targetCtx.restore(); continue; }
+                 targetCtx.strokeStyle = '#ffffff';
+                 targetCtx.shadowBlur = 2;
+                 targetCtx.globalAlpha = birthEase;
+             }
 
-      // 2. Main neon body
-      targetCtx.lineWidth = birthThickness;
-      targetCtx.shadowBlur = 10 * birthEase;
-      targetCtx.globalAlpha = 0.8 * birthEase;
-      targetCtx.stroke();
+             // Compute dynamic width per segment
+             let prevPoint = stroke.points[0];
+             let i = 1;
+             for (; i < stroke.points.length - 2; i++) {
+                 const p1 = stroke.points[i];
+                 const p2 = stroke.points[i + 1];
+                 const xc = (p1.x + p2.x) / 2;
+                 const yc = (p1.y + p2.y) / 2;
+                 
+                 // Distance represents velocity (sampled at ~60fps)
+                 const dist = Math.hypot(p1.x - prevPoint.x, p1.y - prevPoint.y);
+                 
+                 // Normalize dist: assume 0 = max thick, 40+ = min thick
+                 const speedFactor = Math.min(1, Math.max(0, dist / 40));
+                 // Exponential falloff for sharper tapers
+                 const thicknessScale = 1.0 - (speedFactor * 0.7); 
+                 
+                 let layerThick = baseThickness * thicknessScale;
+                 if (layer === 0) layerThick *= 1.5;
+                 else if (layer === 2) layerThick *= 0.3;
+                 
+                 targetCtx.beginPath();
+                 targetCtx.moveTo(prevPoint.x, prevPoint.y);
+                 targetCtx.quadraticCurveTo(p1.x, p1.y, xc, yc);
+                 targetCtx.lineWidth = layerThick;
+                 targetCtx.stroke();
+                 
+                 prevPoint = { x: xc, y: yc };
+             }
+             
+             // Final tail segment
+             const p1 = stroke.points[i];
+             const p2 = stroke.points[i + 1];
+             const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+             const speedFactor = Math.min(1, Math.max(0, dist / 40));
+             const thicknessScale = 1.0 - (speedFactor * 0.7);
+             let layerThick = baseThickness * thicknessScale;
+             if (layer === 0) layerThick *= 1.5;
+             else if (layer === 2) layerThick *= 0.3;
+             
+             targetCtx.beginPath();
+             targetCtx.moveTo(prevPoint.x, prevPoint.y);
+             targetCtx.quadraticCurveTo(p1.x, p1.y, p2.x, p2.y);
+             targetCtx.lineWidth = layerThick;
+             targetCtx.stroke();
 
-      // 3. Bright inner core
-      targetCtx.strokeStyle = '#ffffff';
-      targetCtx.lineWidth = birthThickness * 0.3;
-      targetCtx.shadowBlur = 2;
-      targetCtx.globalAlpha = birthEase;
-      targetCtx.stroke();
+             targetCtx.restore();
+           }
+        }
+      }
 
       targetCtx.restore();
     }
