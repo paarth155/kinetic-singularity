@@ -598,13 +598,13 @@ export default function App() {
 
         cursorRef.current = {
           x: screenX, y: screenY,
-          visible: inputModeRef.current === 'hand',
-          drawing: inputModeRef.current === 'hand' && rightHand.gesture === 'IndexPoint',
-          selecting: inputModeRef.current === 'hand' && rightHand.gesture === 'Pinch',
+          visible: true,
+          drawing: rightHand.gesture === 'IndexPoint',
+          selecting: rightHand.gesture === 'Pinch',
         };
 
         // Hover detection (idle only) — uses cached centroids
-        if (rightHand.gesture === 'None' && inputModeRef.current === 'hand') {
+        if (rightHand.gesture === 'None') {
           let nearestId: string | null = null;
           let minScore = Number.MAX_VALUE;
           for (const s of allVisibleStrokes) {
@@ -626,7 +626,7 @@ export default function App() {
           invalidateRenderCache();
         }
 
-        if (rightHand.gesture === 'IndexPoint' && inputModeRef.current === 'hand') {
+        if (rightHand.gesture === 'IndexPoint') {
 
           currentMode = 'Draw';
           if (!activeLayer.locked) {
@@ -666,7 +666,7 @@ export default function App() {
               }
             }
           }
-        } else if (rightHand.gesture === 'Fist' && inputModeRef.current === 'hand') {
+        } else if (rightHand.gesture === 'Fist') {
 
           currentMode = 'Clear Canvas';
           // Clear only the active layer
@@ -676,7 +676,7 @@ export default function App() {
             invalidateCache();
             syncLayersState();
           }
-        } else if (rightHand.gesture === 'Pinch' && inputModeRef.current === 'hand') {
+        } else if (rightHand.gesture === 'Pinch') {
 
           currentMode = 'Select';
           let nearestId: string | null = null;
