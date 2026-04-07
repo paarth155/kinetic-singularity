@@ -98,6 +98,8 @@ export function useHandTracking(
   useEffect(() => {
     if (!isReady || !videoRef.current || !canvasRef.current) return;
 
+    let active = true; // Guard against getUserMedia resolving after unmount
+
     const video = videoRef.current;
     let lastVideoTime = -1;
 
@@ -138,6 +140,8 @@ export function useHandTracking(
     navigator.mediaDevices
       .getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } } })
       .then((stream) => {
+        // Guard: component may have unmounted while getUserMedia was in flight
+        if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = stream;
         video.srcObject = stream;
         video.addEventListener('loadeddata', predictWebcam);
@@ -223,7 +227,8 @@ export function useHandTracking(
       // IndexPoint: index extended + ring + pinky curled.
       // Middle finger is allowed to be slightly extended (not strict) to handle natural
       // hand positions mid-circle where the middle finger lifts slightly.
-      const isPoint   = indexExt && !ringExt && !pinkyExt;
+      // Pinch takes priority — exclude it from IndexPoint to prevent 1-2 frame micro-strokes on pinch entry
+      const isPoint   = indexExt && !isPinch && !ringExt && !pinkyExt;
 
       let gesture: Gesture = 'None';
 
@@ -369,7 +374,10 @@ export function useHandTracking(
         du.drawLandmarks(lm as any, { color: 'rgba(255,255,255,0.25)', lineWidth: 1, radius: 1.5 });
 
         // Fingertips — highlight with gesture accent colour so user can see what's active
+        // Set shadow state once per hand — not per tip — to avoid 10 GPU state changes per frame per hand
         const TIPS = [4, 8, 12, 16, 20];
+        ctx.shadowColor = accentColor;
+        ctx.shadowBlur  = 12;
         for (const tip of TIPS) {
           const pt = lm[tip];
           if (!pt) continue;
@@ -377,12 +385,10 @@ export function useHandTracking(
           const cy = pt.y * hudCanvas.height;
           ctx.beginPath();
           ctx.arc(cx, cy, tip === 8 ? 7 : 4, 0, Math.PI * 2);
-          ctx.fillStyle   = accentColor;
-          ctx.shadowColor = accentColor;
-          ctx.shadowBlur  = 12;
+          ctx.fillStyle = accentColor;
           ctx.fill();
-          ctx.shadowBlur = 0;
         }
+        ctx.shadowBlur = 0;
 
         // Gesture label above wrist
         const wrist = lm[0];
@@ -576,6 +582,7 @@ export function useHandTracking(
     }
 
     return () => {
+      active = false; // Prevent getUserMedia from attaching to unmounted component
       cancelAnimationFrame(requestRef.current);
       video.removeEventListener('loadeddata', predictWebcam);
       if (streamRef.current) {

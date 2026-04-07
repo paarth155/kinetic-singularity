@@ -1,3 +1,568 @@
+===== src/useHandTracking.ts =====
+import { useEffect, useRef, useState } from 'react';
+import { HandLandmarker, FilesetResolver, DrawingUtils } from '@mediapipe/tasks-vision';
+
+export type Landmark = { x: number; y: number; z: number; visibility?: number };
+
+export type Gesture = 'IndexPoint' | 'Pinch' | 'Fist' | 'Peace' | 'OpenPalm' | 'None';
+
+export type HandState = {
+  landmarks: Landmark[];
+  handedness: 'Left' | 'Right';
+  gesture: Gesture;
+  pinchRatio: number; // expose raw ratio for App.tsx to use for scaling
+};
+
+export type HandTrackingConfig = {
+  quality: 'high' | 'balanced' | 'economy';
+  smoothing: number; // 0-100
+};
+
+// MediaPipe landmark indices for reference
+// 0=wrist 1-4=thumb 5-8=index 9-12=middle 13-16=ring 17-20=pinky
+// MCP=knuckle, PIP=first joint, DIP=second joint, TIP=tip
+
+export function useHandTracking(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  canvasRef: React.RefObject<HTMLCanvasElement | null>,
+  config: HandTrackingConfig
+) {
+  const [isReady, setIsReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // ── Hot refs: updated synchronously inside MediaPipe loop, never go through React ──
+  const handsRef = useRef<HandState[]>([]);
+
+  // ── Display refs: throttled snapshots of hot refs for the JSX overlay ──
+  // Updated at ~8fps so React re-renders at most 8×/sec instead of 30×/sec.
+  const [handsDisplay, setHandsDisplay] = useState<HandState[]>([]);
+  const [latency, setLatency] = useState(0);
+  const lastHandsDisplayUpdateRef = useRef(0);
+  const lastLatencyUpdateRef = useRef(0);
+  // EMA-smoothed latency accumulator (updated every detection frame, displayed slowly)
+  const emaLatencyRef = useRef(0);
+  const HANDS_DISPLAY_INTERVAL_MS = 120; // ~8fps
+  const LATENCY_DISPLAY_INTERVAL_MS = 500; // 2fps — number is decorative
+
+  const landmarkerRef = useRef<HandLandmarker | null>(null);
+  const drawingUtilsRef = useRef<DrawingUtils | null>(null);
+  const requestRef = useRef<number>(0);
+  const configRef = useRef<HandTrackingConfig>(config);
+
+  // Keep ref up to date for the non-React detection loop
+  useEffect(() => { configRef.current = config; }, [config]);
+
+  // ─── Model Init ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    let active = true;
+
+    async function init() {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm'
+        );
+        const landmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            delegate: configRef.current.quality === 'economy' ? 'CPU' : 'GPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 2,
+          // Balanced confidence: lowered to 0.45 for better performance in poor lighting conditions
+          minHandDetectionConfidence: 0.45,
+          minHandPresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45,
+        });
+        if (active) {
+          landmarkerRef.current = landmarker;
+          setIsReady(true);
+        }
+      } catch (err) {
+        console.error('MediaPipe model failed to load:', err);
+        if (active) {
+          setError('AI model failed to load. Check your internet connection and reload.');
+        }
+      }
+    }
+    init();
+
+    return () => {
+      active = false;
+      if (landmarkerRef.current) landmarkerRef.current.close();
+    };
+  }, []);
+
+  // ─── Tracking Loop ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!isReady || !videoRef.current || !canvasRef.current) return;
+
+    const video = videoRef.current;
+    let lastVideoTime = -1;
+
+    // Per-hand smoothed landmark history for the EMA filter
+    const smoothed: Record<string, Landmark[]> = {};
+
+    // Pinch hysteresis: two thresholds so pinch doesn't flicker on/off
+    const pinchActive: Record<string, boolean> = { Right: false, Left: false };
+    const PINCH_ENTER = 0.17; // tight to enter (ratio to palm size)
+    const PINCH_EXIT  = 0.30; // wide to exit
+
+    // Gesture debounce: each gesture class has its own required hold-frame count
+    // Faster gestures (Pinch) confirm quicker; destructive ones (Fist) need longer holds
+    const GESTURE_FRAMES: Record<Gesture, number> = {
+      IndexPoint: 3,
+      Pinch:      3,
+      Peace:      4,
+      OpenPalm:   4,
+      Fist:       8,  // Fist = clear canvas, needs extra guard frames
+      None:       2,
+    };
+
+    interface GestureHistory {
+      raw: Gesture;
+      stable: Gesture;
+      count: number;
+      graceTimer: number;
+    }
+    const gestureHistory: Record<string, GestureHistory> = {
+      Right: { raw: 'None', stable: 'None', count: 0, graceTimer: 0 },
+      Left:  { raw: 'None', stable: 'None', count: 0, graceTimer: 0 },
+    };
+
+    const lostHandFrames: Record<string, number> = { Left: 0, Right: 0 };
+
+    // 640×480 is sufficient for hand landmark detection and saves ~5× processing vs 1080p
+    const streamRef = { current: null as MediaStream | null };
+    navigator.mediaDevices
+      .getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } } })
+      .then((stream) => {
+        streamRef.current = stream;
+        video.srcObject = stream;
+        video.addEventListener('loadeddata', predictWebcam);
+      })
+      .catch((err: unknown) => {
+        console.error('Webcam failed to initialize:', err);
+        const name = (err instanceof Error) ? err.name : '';
+        if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+          setError('Camera access denied. Please allow camera permission and reload.');
+        } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+          setError('No camera found. Please connect a webcam and reload.');
+        } else {
+          setError('Camera unavailable. It may be in use by another app.');
+        }
+      });
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    function getAspect() {
+      return video.videoWidth > 0 ? video.videoWidth / video.videoHeight : 16 / 9;
+    }
+
+    /** 3D normalised Euclidean distance between two landmarks, aspect-corrected */
+    function dist(a: Landmark, b: Landmark) {
+      const aspect = getAspect();
+      return Math.hypot((a.x - b.x) * aspect, a.y - b.y, (a.z - b.z) * aspect);
+    }
+
+    /**
+     * Rotation-invariant finger extension check.
+     * Measures straightness of the MCP→PIP→TIP chain using dot product.
+     * A curled finger bends at the PIP joint — the two vectors point in very
+     * different directions. An extended finger has vectors aligned (dot ≈ 1).
+     * This does NOT depend on the wrist position, so it's perfectly stable during
+     * circular drawing motions where the wrist rotates significantly.
+     */
+    function isFingerExtended(tip: Landmark, _dip: Landmark, pip: Landmark, mcp: Landmark, _wrist: Landmark): boolean {
+      // Vector MCP → PIP
+      const v1x = pip.x - mcp.x, v1y = pip.y - mcp.y, v1z = pip.z - mcp.z;
+      // Vector PIP → TIP
+      const v2x = tip.x - pip.x, v2y = tip.y - pip.y, v2z = tip.z - pip.z;
+
+      const dot = v1x * v2x + v1y * v2y + v1z * v2z;
+      const mag1 = Math.hypot(v1x, v1y, v1z);
+      const mag2 = Math.hypot(v2x, v2y, v2z);
+
+      if (mag1 === 0 || mag2 === 0) return false;
+
+      // cosine of the bend angle: 1 = perfectly straight, < 0 = folded back
+      // Threshold 0.5 ≈ 60° bend tolerance — extended but not necessarily rigid
+      const cosAngle = dot / (mag1 * mag2);
+      return cosAngle > 0.5;
+    }
+
+    /**
+     * Full gesture classification.
+     * Receives smoothed landmarks and the current pinch state for this hand.
+     */
+    function detectGesture(lm: Landmark[], handedness: string): { gesture: Gesture; pinchRatio: number } {
+      const wrist = lm[0];
+
+      // Finger extension using the stronger 2-condition check
+      const indexExt  = isFingerExtended(lm[8],  lm[7],  lm[6],  lm[5],  wrist);
+      const middleExt = isFingerExtended(lm[12], lm[11], lm[10], lm[9],  wrist);
+      const ringExt   = isFingerExtended(lm[16], lm[15], lm[14], lm[13], wrist);
+      const pinkyExt  = isFingerExtended(lm[20], lm[19], lm[18], lm[17], wrist);
+
+      // Palm scale = wrist ↔ middle MCP knuckle (scale-invariant reference)
+      const palmScale = dist(wrist, lm[9]);
+
+      // Pinch ratio: thumb tip ↔ index tip, normalised by palm size
+      const rawPinchDist  = dist(lm[4], lm[8]);
+      const pinchRatio    = palmScale > 0 ? rawPinchDist / palmScale : 1;
+
+      // Hysteresis pinch state
+      const wasPinching   = pinchActive[handedness];
+      const isPinch       = wasPinching ? pinchRatio < PINCH_EXIT : pinchRatio < PINCH_ENTER;
+      pinchActive[handedness] = isPinch;
+
+      const isFist    = !indexExt && !middleExt && !ringExt && !pinkyExt;
+      const isOpen    = indexExt && middleExt && ringExt && pinkyExt;
+      const isPeace   = indexExt && middleExt && !ringExt && !pinkyExt;
+      // IndexPoint: index extended + ring + pinky curled.
+      // Middle finger is allowed to be slightly extended (not strict) to handle natural
+      // hand positions mid-circle where the middle finger lifts slightly.
+      const isPoint   = indexExt && !ringExt && !pinkyExt;
+
+      let gesture: Gesture = 'None';
+
+      if (handedness === 'Right') {
+        // Priority order: Pinch > Fist > IndexPoint > None
+        // Pinch checked BEFORE Fist because a tight pinch curls fingers, triggering isFist too
+        if (isPinch)  gesture = 'Pinch';
+        else if (isFist)   gesture = 'Fist';
+        else if (isPoint)  gesture = 'IndexPoint';
+      } else {
+        // Left hand: Pinch > OpenPalm > Peace > None
+        if (isPinch)  gesture = 'Pinch';
+        else if (isOpen)   gesture = 'OpenPalm';
+        else if (isPeace)  gesture = 'Peace';
+      }
+
+      return { gesture, pinchRatio };
+    }
+
+    // ── Debounce ─────────────────────────────────────────────────────────────
+
+    const GRACE_FRAMES = 10; // Frames to remember a gesture if it temporarily drops to None
+
+    function stabiliseGesture(raw: Gesture, history: GestureHistory): Gesture {
+      if (history.raw === raw) {
+        history.count = Math.min(history.count + 1, 60);
+      } else {
+        history.raw   = raw;
+        history.count = 1;
+      }
+
+      // If we achieved a stable gesture and suddenly lost it to 'None', enter grace period
+      if (history.stable !== 'None' && raw === 'None') {
+         history.graceTimer = Math.min(history.graceTimer + 1, GRACE_FRAMES);
+         if (history.graceTimer < GRACE_FRAMES) {
+             return history.stable; // Force keep the old strong gesture
+         }
+      }
+
+      // Lock in once gesture has been stable for the required number of frames
+      if (history.count >= GESTURE_FRAMES[raw]) {
+        history.stable = raw;
+        history.graceTimer = 0; // Reset grace on new stable gesture
+      }
+      return history.stable;
+    }
+
+    // ── EMA Smoother ────────────────────────────────────────────────────────
+
+    /**
+     * Velocity-adaptive EMA: fast motion → high alpha (responsive), still → low alpha (stable).
+     * Uses only the XY delta for velocity (Z is inherently noisier and less important for 2D drawing).
+     */
+    function smoothLandmarks(raw: Landmark[], prevSmoothed: Landmark[]): Landmark[] {
+      return raw.map((lm, i) => {
+        const prev = prevSmoothed[i];
+        if (!prev) return lm;
+
+        const aspect = getAspect();
+        const rawDx = lm.x - prev.x;
+        const rawDy = lm.y - prev.y;
+        // Use aspect-corrected deltas ONLY for velocity calculation, not position update
+        const speed = Math.hypot(rawDx * aspect, rawDy); // normalised [0..~0.1]
+
+        // Remap speed to alpha: still→base (heavy smoothing), fast→target (responsive)
+        // smoothing 0   => base 0.50 (low smoothing), target 0.90 (high response)
+        // smoothing 100 => base 0.05 (high smoothing), target 0.70 (low response)
+        const s = configRef.current.smoothing / 100;
+        const baseAlpha = 0.50 - (s * 0.45);   // [0.50 .. 0.05]
+        const targetAlpha = 0.90 - (s * 0.20); // [0.90 .. 0.70]
+        const alpha = Math.min(targetAlpha, Math.max(baseAlpha, speed * 18.0));
+
+        return {
+          x: prev.x + alpha * rawDx,
+          y: prev.y + alpha * rawDy,
+          z: prev.z + alpha * (lm.z - prev.z),
+          visibility: lm.visibility,
+        };
+      });
+    }
+
+    // ── HUD Drawing ──────────────────────────────────────────────────────────
+
+    const GESTURE_COLORS: Record<Gesture, string> = {
+      IndexPoint: '#00ff88',
+      Pinch:      '#ff51fa',
+      Fist:       '#ff4444',
+      Peace:      '#8ff5ff',
+      OpenPalm:   '#ffd000',
+      None:       '#ffffff44',
+    };
+
+    function drawHUD(smoothedByHand: Record<string, Landmark[]>, gestureByHand: Record<string, Gesture>) {
+      const hudCanvas = canvasRef.current;
+      if (!hudCanvas) return;
+      const ctx = hudCanvas.getContext('2d');
+      if (!ctx) return;
+
+      // Match canvas resolution to video — recreate DrawingUtils if canvas resized
+      if (hudCanvas.width !== video.videoWidth || hudCanvas.height !== video.videoHeight) {
+        hudCanvas.width  = video.videoWidth;
+        hudCanvas.height = video.videoHeight;
+        // Context changes on resize, DrawingUtils holds stale ref — recreate
+        drawingUtilsRef.current = new DrawingUtils(ctx);
+      }
+      ctx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
+
+      if (!drawingUtilsRef.current) {
+        drawingUtilsRef.current = new DrawingUtils(ctx);
+      }
+      const du = drawingUtilsRef.current;
+
+      for (const [hand, lm] of Object.entries(smoothedByHand)) {
+        const gesture     = gestureByHand[hand] ?? 'None';
+        const accentColor = GESTURE_COLORS[gesture];
+
+        // Skeleton connectors (subtle cyan)
+        du.drawConnectors(lm as any, HandLandmarker.HAND_CONNECTIONS, {
+          color: 'rgba(143,245,255,0.35)',
+          lineWidth: 1.5,
+        });
+
+        // All joints (dim)
+        du.drawLandmarks(lm as any, { color: 'rgba(255,255,255,0.25)', lineWidth: 1, radius: 1.5 });
+
+        // Fingertips — highlight with gesture accent colour so user can see what's active
+        const TIPS = [4, 8, 12, 16, 20];
+        for (const tip of TIPS) {
+          const pt = lm[tip];
+          if (!pt) continue;
+          const cx = pt.x * hudCanvas.width;
+          const cy = pt.y * hudCanvas.height;
+          ctx.beginPath();
+          ctx.arc(cx, cy, tip === 8 ? 7 : 4, 0, Math.PI * 2);
+          ctx.fillStyle   = accentColor;
+          ctx.shadowColor = accentColor;
+          ctx.shadowBlur  = 12;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+
+        // Gesture label above wrist
+        const wrist = lm[0];
+        if (wrist) {
+          const wx = wrist.x * hudCanvas.width;
+          const wy = wrist.y * hudCanvas.height;
+          ctx.font      = 'bold 13px monospace';
+          ctx.fillStyle = accentColor;
+          ctx.shadowColor = accentColor;
+          ctx.shadowBlur  = 8;
+          ctx.fillText(`${hand}: ${gesture}`, wx - 30, wy + 20);
+          ctx.shadowBlur = 0;
+        }
+      }
+    }
+
+    // ── Main Prediction Loop ─────────────────────────────────────────────────
+
+    function predictWebcam() {
+      try {
+        if (video.currentTime !== lastVideoTime && landmarkerRef.current) {
+          const t0 = performance.now();
+          lastVideoTime = video.currentTime;
+          const results = landmarkerRef.current.detectForVideo(video, t0);
+
+          // Track which hands appeared this frame so we can clear stale ones
+          const activeHands = new Set<string>();
+
+          if (results?.landmarks?.length) {
+            const smoothedByHand: Record<string, Landmark[]>  = {};
+            const gestureByHand:  Record<string, Gesture>     = {};
+
+            // ─── Logical Hand Assignment ───
+            // MediaPipe's 'handednesses' classifier is inherently broken for selfie cameras when pointing 
+            // because the back of a Right hand visually looks identical to a first-person Left hand. 
+            // We ignore it entirely. Instead we use a bulletproof combination of spatial tracking 
+            // (to anchor identities and reject ghosts) and X-coordinate sorting for fresh detections.
+
+            let currentHandsInfo = results.landmarks.map(rawLm => {
+              const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
+              const cy = rawLm.reduce((sum, p) => sum + p.y, 0) / rawLm.length;
+              return { rawLm, cx, cy, assigned: null as 'Left' | 'Right' | null };
+            });
+
+            // Step 1: Spatial tracking lock for established hands
+            const assignedStatus = { Left: false, Right: false };
+            for (const handName of ['Left', 'Right'] as const) {
+              if (smoothed[handName]) {
+                const prevCx = smoothed[handName].reduce((sum, p) => sum + p.x, 0) / smoothed[handName].length;
+                const prevCy = smoothed[handName].reduce((sum, p) => sum + p.y, 0) / smoothed[handName].length;
+                
+                let closestIdx = -1;
+                let minDist = 0.4; // 40% of screen tolerance
+                
+                currentHandsInfo.forEach((info, idx) => {
+                  if (!info.assigned) {
+                    const dist = Math.hypot(info.cx - prevCx, info.cy - prevCy);
+                    if (dist < minDist) {
+                      minDist = dist;
+                      closestIdx = idx;
+                    }
+                  }
+                });
+                
+                if (closestIdx !== -1) {
+                  currentHandsInfo[closestIdx].assigned = handName;
+                  assignedStatus[handName] = true;
+                }
+              }
+            }
+
+            // Step 2: Assign any fresh/unlocked hands using the core rules
+            const unassigned = currentHandsInfo.filter(info => !info.assigned);
+            
+            if (unassigned.length > 0) {
+               // Sort strictly ascending by X. In unmirrored camera coords, physical Right is on the lower-X side.
+               unassigned.sort((a, b) => a.cx - b.cx);
+
+               if (unassigned.length === 1) {
+                 // The "Drawing Hand First" rule: if one hand enters, it takes the Drawing slot (Right) if available.
+                 const info = unassigned[0];
+                 if (!assignedStatus.Right) {
+                   info.assigned = 'Right';
+                 } else if (!assignedStatus.Left) {
+                   info.assigned = 'Left';
+                 }
+               } else if (unassigned.length >= 2) {
+                 // Two hands appeared simultaneously. Lowest X = Right, next = Left.
+                 if (!assignedStatus.Right) {
+                   unassigned[0].assigned = 'Right';
+                   assignedStatus.Right = true;
+                 } else {
+                   unassigned[0].assigned = 'Left';
+                   assignedStatus.Left = true;
+                 }
+
+                 if (!assignedStatus.Left) {
+                   unassigned[1].assigned = 'Left';
+                   assignedStatus.Left = true;
+                 } else if (!assignedStatus.Right) {
+                   unassigned[1].assigned = 'Right';
+                   assignedStatus.Right = true;
+                 }
+               }
+            }
+
+            // Filter out any unassignable 3rd ghost hands
+            currentHandsInfo = currentHandsInfo.filter(info => info.assigned !== null).slice(0, 2);
+
+            const newHands: HandState[] = currentHandsInfo.map(({ rawLm, assigned }) => {
+              const hand = assigned as 'Left' | 'Right';
+              lostHandFrames[hand] = 0;
+              activeHands.add(hand);
+
+              // Apply velocity-adaptive EMA smoothing
+              const prev    = smoothed[hand] ?? rawLm;
+              const lm      = smoothLandmarks(rawLm, prev);
+              smoothed[hand] = lm;
+
+              // Detect + debounce gesture
+              const { gesture: rawGesture, pinchRatio } = detectGesture(lm, hand);
+              const stableGesture = stabiliseGesture(rawGesture, gestureHistory[hand]);
+
+              smoothedByHand[hand] = lm;
+              gestureByHand[hand]  = stableGesture;
+
+              return {
+                landmarks:  lm,
+                handedness: hand,
+                gesture:    stableGesture,
+                pinchRatio,
+              };
+            });
+
+            handsRef.current = newHands; // sync ref immediately — zero React overhead
+            drawHUD(smoothedByHand, gestureByHand);
+          } else {
+            handsRef.current = [];
+          }
+
+          // Soft clear smoothed + history for hands that left the frame (5-frame grace period)
+          for (const hand of ['Left', 'Right']) {
+            if (!activeHands.has(hand)) {
+              lostHandFrames[hand] = (lostHandFrames[hand] || 0) + 1;
+              if (lostHandFrames[hand] > 5) {
+                delete smoothed[hand];
+                pinchActive[hand]    = false;
+                gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0, graceTimer: 0 };
+              }
+            }
+          }
+
+          if (handsRef.current.length === 0) {
+            // Clear HUD
+            const hudCanvas = canvasRef.current;
+            if (hudCanvas) {
+              const ctx = hudCanvas.getContext('2d');
+              ctx?.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
+            }
+          }
+
+          // ── Latency: EMA-smooth and update display at 2fps (decorative number, no need to flicker) ──
+          const elapsed = performance.now() - t0;
+          emaLatencyRef.current = emaLatencyRef.current === 0
+            ? elapsed
+            : emaLatencyRef.current * 0.85 + elapsed * 0.15;
+          const now = performance.now();
+          if (now - lastLatencyUpdateRef.current > LATENCY_DISPLAY_INTERVAL_MS) {
+            lastLatencyUpdateRef.current = now;
+            setLatency(Math.round(emaLatencyRef.current));
+          }
+        }
+
+        // ── Throttled hands display update for JSX overlay (~8fps max) ──
+        const nowDisplay = performance.now();
+        if (nowDisplay - lastHandsDisplayUpdateRef.current > HANDS_DISPLAY_INTERVAL_MS) {
+          lastHandsDisplayUpdateRef.current = nowDisplay;
+          setHandsDisplay([...handsRef.current]);
+        }
+      } catch (err) {
+        console.error("MediaPipe detection loop error:", err);
+      } finally {
+        requestRef.current = requestAnimationFrame(predictWebcam);
+      }
+    }
+
+    return () => {
+      cancelAnimationFrame(requestRef.current);
+      video.removeEventListener('loadeddata', predictWebcam);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, [isReady, videoRef, canvasRef]);
+
+  return { hands: handsDisplay, handsRef, isReady, latency, error };
+}
+
+
+===== src/App.tsx =====
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { useHandTracking, type HandTrackingConfig } from './useHandTracking';
 
@@ -215,9 +780,6 @@ export default function App() {
   // ─────────────────────────────────────────────────────────────────────────
 
   const activeStrokeIdRef = useRef<string | null>(null);
-  // Schedule a React state sync at end of the current RAF frame instead of calling syncLayersState()
-  // directly inside processGestures, which would trigger reconciliation mid-draw.
-  const syncScheduledRef = useRef<boolean>(false);
   const selectAllModeRef = useRef<boolean>(false);
   const [selectAllModeState, setSelectAllModeState] = useState<boolean>(false);
   const modeRef = useRef<HTMLSpanElement>(null);
@@ -270,9 +832,6 @@ export default function App() {
   const textInputRef = useRef<HTMLInputElement>(null);
 
   const brushColorRef = useRef<string>('#8ff5ff');
-  // brushColorState mirrors brushColorRef for reactive JSX (palette swatch ring, etc.).
-  // Update BOTH together wherever brushColorRef.current is written.
-  const [brushColorState, setBrushColorState] = useState<string>(brushColorRef.current);
   const brushThicknessRef = useRef<number>(6);
   const globalTransformRef = useRef({ scale: 1, rotation: 0 });
   const targetParallaxRef = useRef({ x: 0, y: 0 });
@@ -304,7 +863,6 @@ export default function App() {
       brushColorRef.current = brushColorRef.current === '#ff4f6d' ? '#8ff5ff' : brushColorRef.current;
       themeSelColorRef.current = '#8ff5ff';
     }
-    setBrushColorState(brushColorRef.current); // keep reactive state in sync
     invalidateCache(); // Rebuild cache with new theme selection colors
   }, [invalidateCache]);
 
@@ -517,11 +1075,7 @@ export default function App() {
                  // Exponential falloff for sharper tapers
                  const thicknessScale = 1.0 - (speedFactor * 0.7); 
                  
-                 // Z-depth thickness: use averaged per-point z if present, else fall back to baseThickness
-                 const zThick = (p1.z !== undefined || prevPoint.z !== undefined)
-                   ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
-                   : baseThickness;
-                 let layerThick = zThick * thicknessScale;
+                 let layerThick = baseThickness * thicknessScale;
                  if (layer === 0) layerThick *= 1.5;
                  else if (layer === 2) layerThick *= 0.3;
                  
@@ -531,7 +1085,7 @@ export default function App() {
                  targetCtx.lineWidth = layerThick;
                  targetCtx.stroke();
                  
-                 prevPoint = { x: xc, y: yc, z: p1.z }; // carry z so tail segment retains depth context
+                 prevPoint = { x: xc, y: yc };
              }
              
              // Final tail segment
@@ -540,11 +1094,7 @@ export default function App() {
              const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
              const speedFactor = Math.min(1, Math.max(0, dist / 40));
              const thicknessScale = 1.0 - (speedFactor * 0.7);
-             // Z-depth thickness for tail segment
-             const tailZThick = (p1.z !== undefined || prevPoint.z !== undefined)
-               ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
-               : baseThickness;
-             let layerThick = tailZThick * thicknessScale;
+             let layerThick = baseThickness * thicknessScale;
              if (layer === 0) layerThick *= 1.5;
              else if (layer === 2) layerThick *= 0.3;
              
@@ -671,16 +1221,11 @@ export default function App() {
           currentMode = 'Draw';
           if (!activeLayer.locked) {
             if (!rightWasPointing.current) {
-              // Bake the previous cached stroke without marking the stroke index dirty.
-              // visibleStrokesDirtyRef stays false — new stroke is already added to the index below.
-              invalidateRenderCache();
-              // Capture initial depth for first point
-              const rawZ0 = rightHand.landmarks[8].z ?? 0;
-              const zNorm0 = Math.max(0, Math.min(1, (-rawZ0 + 0.1) / 0.3));
-              const dynThick0 = brushThicknessRef.current * (0.6 + zNorm0 * 0.8);
+              // Finalize previous stroke — bake it into cache
+              invalidateCache();
               const newStroke: Stroke = {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-                points: [{ x: worldX, y: worldY, z: dynThick0 }],
+                points: [{ x: worldX, y: worldY }],
                 color: brushColorRef.current,
                 thickness: brushThicknessRef.current,
                 scale: 1, rotation: 0, translate: { x: 0, y: 0 },
@@ -699,13 +1244,8 @@ export default function App() {
               const activeStroke = findStrokeById(newActiveStrokeId ?? '');
               if (activeStroke && activeStroke.points.length > 0) {
                 const prevPt = activeStroke.points[activeStroke.points.length - 1];
-                const pointMinDist = 1.5 / globalTransformRef.current.scale;
-                if (Math.hypot(prevPt.x - worldX, prevPt.y - worldY) > pointMinDist) {
-                  // Compute depth-driven dynamic thickness and store in point.z
-                  const rawZ = rightHand.landmarks[8].z ?? 0;
-                  const zNorm = Math.max(0, Math.min(1, (-rawZ + 0.1) / 0.3));
-                  const dynamicThickness = brushThicknessRef.current * (0.6 + zNorm * 0.8);
-                  activeStroke.points.push({ x: worldX, y: worldY, z: dynamicThickness });
+                if (Math.hypot(prevPt.x - worldX, prevPt.y - worldY) > 1.5) {
+                  activeStroke.points.push({ x: worldX, y: worldY });
                   // Expand bounds live so renderStroke shows correct bounding box
                   const b = activeStroke.bounds;
                   if (worldX < b.minX) b.minX = worldX;
@@ -723,11 +1263,8 @@ export default function App() {
           if (activeLayer.strokes.length > 0 && !activeLayer.locked) {
             activeLayer.strokes = [];
             newActiveStrokeId = null;
-            // Clear stale IDs so render sets don't ghost-render deleted strokes
-            pendingBakesRef.current.clear();
-            liveManipulationIdsRef.current.clear();
             invalidateCache();
-            syncScheduledRef.current = true;
+            syncLayersState();
           }
         } else if (rightHand.gesture === 'Pinch') {
 
@@ -760,7 +1297,7 @@ export default function App() {
           }
           invalidateCache();
           rightWasPointing.current = false;
-          syncScheduledRef.current = true; // batch the React sync to end of RAF frame
+          syncLayersState();
         }
       } else {
         // Right hand left the frame — finalize any in-progress stroke
@@ -774,7 +1311,7 @@ export default function App() {
             finishedStroke.bounds = computeBounds(finishedStroke.points);
           }
           invalidateCache();
-          syncScheduledRef.current = true; // batch the React sync to end of RAF frame
+          syncLayersState();
         }
         rightWasPointing.current = false;
         cursorRef.current.visible = false;
@@ -833,22 +1370,17 @@ export default function App() {
         if (leftHand.gesture === 'Pinch') {
           currentMode = 'Scale';
           const currentX = (1 - indexTip.x) * canvas!.width;
-          const currentY = indexTip.y * canvas!.height;
           if (!state.isScaling) {
             state.isScaling = true;
-            state.initialPointer = { x: currentX, y: currentY };
+            state.initialPointer = { x: currentX, y: 0 };
             targetStrokes.forEach(s => {
               state.initialScales.set(s.id, s.scale);
               liveManipulationIdsRef.current.add(s.id);
             });
             invalidateRenderCache();
           } else {
-            const dX = state.initialPointer.x - currentX;
-            const dY = state.initialPointer.y - currentY;
-            // 2D drag: magnitude drives scale size, primary axis sets sign (pull = shrink, push = grow)
-            const rawMag = Math.hypot(dX, dY);
-            const sign = Math.abs(dX) >= Math.abs(dY) ? Math.sign(dX) : Math.sign(dY);
-            const scaleFactor = 1 + (sign * rawMag / 200);
+            const dragDelta = state.initialPointer.x - currentX;
+            const scaleFactor = 1 + (dragDelta / 200);
             targetStrokes.forEach(s => {
               const init = state.initialScales.get(s.id) || 1;
               s.scale = Math.max(0.05, Math.min(12, init * scaleFactor));
@@ -1220,12 +1752,6 @@ export default function App() {
         mouseSelectionBoxRef.current = null;
       }
 
-      // Dispatch any pending React state sync exactly once per frame, after all canvas ops
-      if (syncScheduledRef.current) {
-        syncScheduledRef.current = false;
-        syncLayersState();
-      }
-
       animId = requestAnimationFrame(render);
     }
     render();
@@ -1254,8 +1780,8 @@ export default function App() {
           <button onClick={() => setActiveModal('Settings')} className={`transition-all ${activeModal === 'Settings' ? 'text-primary' : 'text-slate-500 hover:text-primary'}`}>
             <span className="material-symbols-outlined">settings</span>
           </button>
-          <button onClick={() => setActiveModal('History')} className={`transition-all ${activeModal === 'History' ? 'text-primary' : 'text-slate-500 hover:text-primary'}`} title="Canvas Info">
-            <span className="material-symbols-outlined">info</span>
+          <button onClick={() => setActiveModal('History')} className={`transition-all ${activeModal === 'History' ? 'text-primary' : 'text-slate-500 hover:text-primary'}`}>
+            <span className="material-symbols-outlined">history</span>
           </button>
           <button onClick={() => { navigator.clipboard.writeText(window.location.href); showToast('Project link copied to clipboard!'); }} className="text-slate-500 hover:text-primary transition-all">
             <span className="material-symbols-outlined">share</span>
@@ -1294,17 +1820,6 @@ export default function App() {
           <div onClick={() => {
             const next = inputMode === 'mouse' ? 'hand' : 'mouse';
             setInputMode(next);
-            // Finalize any in-progress mouse stroke so it has correct centroid/bounds
-            if (mouseDrawingRef.current) {
-              const abandonedStroke = strokeIndexRef.current.get(mouseStrokeIdRef.current ?? '');
-              if (abandonedStroke) {
-                if (abandonedStroke.points.length > 20) abandonedStroke.points = decimatePoints(abandonedStroke.points, 1.0);
-                abandonedStroke.centroid = computeCentroid(abandonedStroke.points);
-                abandonedStroke.bounds = computeBounds(abandonedStroke.points);
-              }
-              invalidateCache();
-              syncLayersState();
-            }
             mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
             showToast(next === 'mouse' ? 'Mouse drawing enabled — click & drag to draw' : 'Hand tracking mode restored');
           }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'mouse' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
@@ -1419,12 +1934,8 @@ export default function App() {
             showToast('Recalibrating sensors and clearing canvas...');
             layersRef.current.forEach(l => { l.strokes = []; });
             activeStrokeIdRef.current = null;
-            rightWasPointing.current = false;         // prevent stale finalize on next hand gesture
-            pendingBakesRef.current.clear();           // prevent ghost renders of cleared strokes
-            liveManipulationIdsRef.current.clear();    // prevent ghost renders of cleared strokes
             globalTransformRef.current = { scale: 1, rotation: 0 };
             invalidateCache();
-            rebuildStrokeIndex();                      // wipe stale strokeIndexRef entries
             syncLayersState(); // reflect cleared stroke counts in UI
           }} className="w-full py-2 bg-primary/10 border border-primary/30 text-primary text-[10px] font-bold space-grotesk tracking-widest hover:bg-primary hover:text-on-primary active:bg-primary active:text-on-primary transition-all">
             CALIBRATE
@@ -1523,22 +2034,13 @@ export default function App() {
                 }
 
                 // Not on any handle — try to select a new stroke by proximity
-                // Centroids are stored in world space; convert click to world space first.
                 if (visibleStrokesDirtyRef.current) rebuildStrokeIndex();
                 const allVisible = visibleStrokesRef.current;
-                const t2 = globalTransformRef.current;
-                const cw2 = (drawingCanvasRef.current?.width ?? window.innerWidth) / 2;
-                const ch2 = (drawingCanvasRef.current?.height ?? window.innerHeight) / 2;
-                const ddx = sx - cw2, ddy = sy - ch2;
-                const cosR2 = Math.cos((-t2.rotation * Math.PI) / 180);
-                const sinR2 = Math.sin((-t2.rotation * Math.PI) / 180);
-                const worldClickX = cw2 + (ddx / t2.scale) * cosR2 - (ddy / t2.scale) * sinR2;
-                const worldClickY = ch2 + (ddx / t2.scale) * sinR2 + (ddy / t2.scale) * cosR2;
                 let nearestId: string | null = null;
                 let nearestDist = 180;
                 for (const s of allVisible) {
                   if (s.points.length === 0) continue;
-                  const d = Math.hypot(s.centroid.x + s.translate.x - worldClickX, s.centroid.y + s.translate.y - worldClickY);
+                  const d = Math.hypot(s.centroid.x + s.translate.x - sx, s.centroid.y + s.translate.y - sy);
                   if (d < nearestDist) { nearestDist = d; nearestId = s.id; }
                 }
                 mouseSelectedIdRef.current = nearestId;
@@ -1676,16 +2178,8 @@ export default function App() {
               autoFocus
               className="bg-black/80 border border-primary/60 text-primary px-4 py-2 text-lg font-space-grotesk outline-none shadow-[0_0_30px_rgba(143,245,255,0.2)] min-w-[200px]"
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.currentTarget.blur(); // trigger onBlur to commit
-                } else if (e.key === 'Escape') {
-                  e.currentTarget.value = ''; // clear so blur doesn't commit
-                  e.currentTarget.blur();
-                }
-              }}
-              onBlur={(e) => {
-                const text = e.currentTarget.value.trim();
-                if (text) {
+                if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+                  const text = e.currentTarget.value.trim();
                   const activeLayer = layersRef.current.find((l: Layer) => l.id === activeLayerIdRef.current)
                     ?? layersRef.current[layersRef.current.length - 1];
                   if (!activeLayer.locked) {
@@ -1709,9 +2203,12 @@ export default function App() {
                       showToast(`Text "${text}" placed on canvas`);
                     }
                   }
+                  setShowTextInput(false);
+                } else if (e.key === 'Escape') {
+                  setShowTextInput(false);
                 }
-                setShowTextInput(false);
               }}
+              onBlur={() => setShowTextInput(false)}
             />
           </div>
         )}
@@ -1737,16 +2234,16 @@ export default function App() {
 
         {/* Tool Palette */}
         <div className="absolute right-8 top-24 flex flex-col gap-2 z-20">
-          <button onClick={() => { globalTransformRef.current.scale *= 1.2; invalidateRenderCache(); showToast('Zoom in applied'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-primary border-primary/40 hover:bg-primary/20 transition-all active:bg-primary/40">
+          <button onClick={() => { globalTransformRef.current.scale *= 1.2; showToast('Zoom in applied'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-primary border-primary/40 hover:bg-primary/20 transition-all active:bg-primary/40">
             <span className="material-symbols-outlined">zoom_in</span>
           </button>
-          <button onClick={() => { globalTransformRef.current.scale = Math.max(0.1, globalTransformRef.current.scale / 1.2); invalidateRenderCache(); showToast('Zoom out applied'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-primary border-primary/40 hover:bg-primary/20 transition-all active:bg-primary/40">
+          <button onClick={() => { globalTransformRef.current.scale = Math.max(0.1, globalTransformRef.current.scale / 1.2); showToast('Zoom out applied'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-primary border-primary/40 hover:bg-primary/20 transition-all active:bg-primary/40">
             <span className="material-symbols-outlined">zoom_out</span>
           </button>
-          <button onClick={() => { globalTransformRef.current.rotation += 90; invalidateRenderCache(); showToast('Rotated 90 degrees'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-on-surface-variant hover:text-white transition-all active:bg-white/10">
+          <button onClick={() => { globalTransformRef.current.rotation += 90; showToast('Rotated 90 degrees'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-on-surface-variant hover:text-white transition-all active:bg-white/10">
             <span className="material-symbols-outlined">rotate_right</span>
           </button>
-          <button onClick={() => { globalTransformRef.current.rotation = 0; globalTransformRef.current.scale = 1; invalidateRenderCache(); showToast('Alignment straight'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-on-surface-variant hover:text-white transition-all active:bg-white/10">
+          <button onClick={() => { globalTransformRef.current.rotation = 0; globalTransformRef.current.scale = 1; showToast('Alignment straight'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-on-surface-variant hover:text-white transition-all active:bg-white/10">
             <span className="material-symbols-outlined">straighten</span>
           </button>
           <div className="h-4"></div>
@@ -1762,9 +2259,6 @@ export default function App() {
             // Delete all strokes in ALL layers, keeping layers themselves
             layersRef.current.forEach(l => { l.strokes = []; });
             activeStrokeIdRef.current = null;
-            rightWasPointing.current = false;
-            pendingBakesRef.current.clear();
-            liveManipulationIdsRef.current.clear();
             invalidateCache();
             syncLayersState(); // reflect cleared stroke counts in UI
           }} className="w-12 h-12 glass-panel flex items-center justify-center text-error border-error/20 hover:bg-error/10 transition-all active:bg-error/30">
@@ -1906,7 +2400,7 @@ export default function App() {
             <h3 className="text-[10px] uppercase tracking-widest font-space-grotesk text-primary opacity-60 mb-1 border-b border-white/5 pb-2">Color Palette</h3>
             <div className="grid grid-cols-2 gap-3">
               {['#8ff5ff', '#ff51fa', '#51ff56', '#ff5151', '#fff', '#000', '#ffd000', '#9c51ff'].map(c => (
-                <button key={c} onClick={() => { brushColorRef.current = c; setBrushColorState(c); setActiveSidebarPanel(null); showToast('Active color updated'); }} className={`w-10 h-10 rounded-full border-2 transition-transform hover:scale-110 ${brushColorState === c ? 'border-primary scale-110 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'border-white/20'}`} style={{ backgroundColor: c }}></button>
+                <button key={c} onClick={() => { brushColorRef.current = c; setActiveSidebarPanel(null); showToast('Active color updated'); }} className={`w-10 h-10 rounded-full border-2 transition-transform hover:scale-110 ${brushColorRef.current === c ? 'border-primary scale-110 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'border-white/20'}`} style={{ backgroundColor: c }}></button>
               ))}
             </div>
           </div>
@@ -2069,3 +2563,214 @@ export default function App() {
     </div>
   );
 }
+
+
+===== src/utils/geometry.ts =====
+export type Vector2 = { x: number; y: number };
+
+export type StrokeBounds = { minX: number; minY: number; maxX: number; maxY: number };
+
+export type Stroke = {
+  id: string;
+  points: Vector2[];
+  color: string;
+  thickness: number;
+  scale: number;
+  rotation: number;
+  translate: Vector2;
+  centroid: Vector2; // cached centroid for O(1) hover/select lookups
+  bounds: StrokeBounds; // cached bounding box for O(1) render setup
+  birthTime: number; // timestamp for birth animation
+};
+
+// ─── Shape generators: return normalized points centered at (cx, cy) with given size ──
+export function generateCirclePoints(cx: number, cy: number, radius: number, segments = 64): Vector2[] {
+  const pts: Vector2[] = [];
+  for (let i = 0; i <= segments; i++) {
+    const angle = (i / segments) * Math.PI * 2;
+    pts.push({ x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius });
+  }
+  return pts;
+}
+
+export function generatePolygonPoints(cx: number, cy: number, radius: number, sides: number): Vector2[] {
+  const pts: Vector2[] = [];
+  for (let i = 0; i <= sides; i++) {
+    const angle = (i / sides) * Math.PI * 2 - Math.PI / 2;
+    pts.push({ x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius });
+  }
+  return pts;
+}
+
+export function generateStarPoints(cx: number, cy: number, outerR: number, innerR: number, spikes = 5): Vector2[] {
+  const pts: Vector2[] = [];
+  for (let i = 0; i <= spikes * 2; i++) {
+    const angle = (i / (spikes * 2)) * Math.PI * 2 - Math.PI / 2;
+    const r = i % 2 === 0 ? outerR : innerR;
+    pts.push({ x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r });
+  }
+  return pts;
+}
+
+export function generateDiamondPoints(cx: number, cy: number, size: number): Vector2[] {
+  return [
+    { x: cx, y: cy - size },
+    { x: cx + size * 0.7, y: cy },
+    { x: cx, y: cy + size },
+    { x: cx - size * 0.7, y: cy },
+    { x: cx, y: cy - size },
+  ];
+}
+
+export function generateRectPoints(cx: number, cy: number, w: number, h: number): Vector2[] {
+  return [
+    { x: cx - w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy + h / 2 },
+    { x: cx - w / 2, y: cy + h / 2 },
+    { x: cx - w / 2, y: cy - h / 2 },
+  ];
+}
+
+export function generateScatterPoints(cx: number, cy: number, radius: number, count = 30): Vector2[] {
+  const pts: Vector2[] = [];
+  // Actual random scatter
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const r = radius * Math.sqrt(Math.random());
+    pts.push({ x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r });
+  }
+  return pts;
+}
+
+export function generateArchPoints(cx: number, cy: number, radius: number): Vector2[] {
+  // An arch shape: semicircle on top, straight base
+  const pts: Vector2[] = [];
+  // Semicircle (top)
+  for (let i = 0; i <= 32; i++) {
+    const angle = Math.PI + (i / 32) * Math.PI;
+    pts.push({ x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius });
+  }
+  // Legs down
+  pts.push({ x: cx + radius, y: cy + radius });
+  pts.push({ x: cx + radius * 0.7, y: cy + radius });
+  pts.push({ x: cx + radius * 0.7, y: cy });
+  // Inner arch
+  for (let i = 32; i >= 0; i--) {
+    const angle = Math.PI + (i / 32) * Math.PI;
+    pts.push({ x: cx + Math.cos(angle) * radius * 0.55, y: cy + Math.sin(angle) * radius * 0.55 });
+  }
+  pts.push({ x: cx - radius * 0.7, y: cy });
+  pts.push({ x: cx - radius * 0.7, y: cy + radius });
+  pts.push({ x: cx - radius, y: cy + radius });
+  pts.push(pts[0]); // close
+  return pts;
+}
+
+export function generateShapePoints(shapeType: string, cx: number, cy: number, size = 80): Vector2[] {
+  switch (shapeType) {
+    case 'circle':         return generateCirclePoints(cx, cy, size);
+    case 'pentagon':       return generatePolygonPoints(cx, cy, size, 5);
+    case 'hexagon':        return generatePolygonPoints(cx, cy, size, 6);
+    case 'change_history': return generatePolygonPoints(cx, cy, size, 3);
+    case 'square':         return generateRectPoints(cx, cy, size * 2, size * 2);
+    case 'crop_square':    return generateRectPoints(cx, cy, size * 2.2, size * 1.4);
+    case 'star':           return generateStarPoints(cx, cy, size, size * 0.45);
+    case 'diamond':        return generateDiamondPoints(cx, cy, size);
+    case 'scatter_plot':   return generateScatterPoints(cx, cy, size);
+    case 'architecture':   return generateArchPoints(cx, cy, size);
+    default:               return generateCirclePoints(cx, cy, size);
+  }
+}
+
+// ─── Text to points: renders text on a hidden canvas and traces points ──
+// The canvas is sized dynamically to fit the text, preventing silent clipping for long strings.
+let textCanvasCache: HTMLCanvasElement | null = null;
+export function textToPoints(text: string, cx: number, cy: number, fontSize = 48): Vector2[] {
+  if (!textCanvasCache) {
+    textCanvasCache = document.createElement('canvas');
+  }
+  const offscreen = textCanvasCache;
+  // Measure text width first using a temporary context setup
+  const fontStr = `bold ${fontSize}px "Space Grotesk", sans-serif`;
+  // Temporarily set font on any 1×1 canvas to measure — context doesn't need to match final size
+  offscreen.width = 1;
+  offscreen.height = 1;
+  const measureCtx = offscreen.getContext('2d', { willReadFrequently: true })!;
+  measureCtx.font = fontStr;
+  const measured = measureCtx.measureText(text);
+  // Pad by 20px each side; height is 2× fontSize to accommodate descenders
+  const W = Math.ceil(measured.width) + 40;
+  const H = Math.ceil(fontSize * 2) + 20;
+  const halfW = Math.floor(W / 2);
+  const halfH = Math.floor(H / 2);
+
+  offscreen.width  = W;
+  offscreen.height = H;
+  const octx = offscreen.getContext('2d', { willReadFrequently: true })!;
+  octx.clearRect(0, 0, W, H);
+  octx.fillStyle = '#fff';
+  octx.font = fontStr;
+  octx.textAlign = 'center';
+  octx.textBaseline = 'middle';
+  octx.fillText(text, halfW, halfH);
+
+  const imageData = octx.getImageData(0, 0, W, H);
+  const pts: Vector2[] = [];
+  const step = 3; // sample every Nth pixel for density
+  for (let py = 0; py < H; py += step) {
+    for (let px = 0; px < W; px += step) {
+      const idx = (py * W + px) * 4;
+      if (imageData.data[idx + 3] > 128) {
+        pts.push({ x: cx - halfW + px, y: cy - halfH + py });
+      }
+    }
+  }
+  return pts;
+}
+
+export function computeCentroid(points: Vector2[]): Vector2 {
+  if (points.length === 0) return { x: 0, y: 0 };
+  let cx = 0, cy = 0;
+  for (let i = 0; i < points.length; i++) { cx += points[i].x; cy += points[i].y; }
+  return { x: cx / points.length, y: cy / points.length };
+}
+
+export function computeBounds(points: Vector2[]): StrokeBounds {
+  if (points.length === 0) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+// ─── Point decimation helper (Ramer-Douglas-Peucker) ─────────────
+export function perpendicularDistance(pt: Vector2, lineStart: Vector2, lineEnd: Vector2): number {
+  const dx = lineEnd.x - lineStart.x;
+  const dy = lineEnd.y - lineStart.y;
+  const mag = Math.hypot(dx, dy);
+  if (mag === 0) return Math.hypot(pt.x - lineStart.x, pt.y - lineStart.y);
+  return Math.abs(dx * (lineStart.y - pt.y) - dy * (lineStart.x - pt.x)) / mag;
+}
+
+export function decimatePoints(points: Vector2[], epsilon: number): Vector2[] {
+  if (points.length <= 2) return points;
+  let maxDist = 0, maxIdx = 0;
+  for (let i = 1; i < points.length - 1; i++) {
+    const d = perpendicularDistance(points[i], points[0], points[points.length - 1]);
+    if (d > maxDist) { maxDist = d; maxIdx = i; }
+  }
+  if (maxDist > epsilon) {
+    const left = decimatePoints(points.slice(0, maxIdx + 1), epsilon);
+    const right = decimatePoints(points.slice(maxIdx), epsilon);
+    return left.slice(0, -1).concat(right);
+  }
+  return [points[0], points[points.length - 1]];
+}
+
+
