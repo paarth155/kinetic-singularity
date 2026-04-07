@@ -546,6 +546,25 @@ export default function App() {
       targetCtx.restore();
     }
 
+    // Inverse-transform screen coordinates through the global zoom/rotate to get world-space coords.
+    // Stroke points are stored in world space; the render loop applies the forward transform.
+    function screenToWorld(sx: number, sy: number): { x: number; y: number } {
+      const t = globalTransformRef.current;
+      const cw = canvas!.width / 2;
+      const ch = canvas!.height / 2;
+      // Undo: translate(cw,ch) → rotate → scale → translate(-cw,-ch)
+      const dx = sx - cw;
+      const dy = sy - ch;
+      const ux = dx / t.scale;
+      const uy = dy / t.scale;
+      const cosR = Math.cos((-t.rotation * Math.PI) / 180);
+      const sinR = Math.sin((-t.rotation * Math.PI) / 180);
+      return {
+        x: cw + ux * cosR - uy * sinR,
+        y: ch + ux * sinR + uy * cosR,
+      };
+    }
+
     function processGestures() {
       // Guard: don't process if no hands are being tracked yet and canvas is empty.
       // Reset parallax target before returning so the canvas doesn't stay tilted.
@@ -595,7 +614,12 @@ export default function App() {
         const indexTip = rightHand.landmarks[8];
         const screenX = (1 - indexTip.x) * canvas!.width;
         const screenY = indexTip.y * canvas!.height;
+        // World-space coordinates for stroke points and hit-testing (accounts for zoom/rotate)
+        const world = screenToWorld(screenX, screenY);
+        const worldX = world.x;
+        const worldY = world.y;
 
+        // Cursor stays in screen space so it tracks the finger visually
         cursorRef.current = {
           x: screenX, y: screenY,
           visible: true,
@@ -603,13 +627,13 @@ export default function App() {
           selecting: rightHand.gesture === 'Pinch',
         };
 
-        // Hover detection (idle only) — uses cached centroids
+        // Hover detection (idle only) — uses cached centroids in world space
         if (rightHand.gesture === 'None') {
           let nearestId: string | null = null;
           let minScore = Number.MAX_VALUE;
           for (const s of allVisibleStrokes) {
             if (s.points.length === 0) continue;
-            const d = Math.hypot(s.centroid.x + s.translate.x - screenX, s.centroid.y + s.translate.y - screenY);
+            const d = Math.hypot(s.centroid.x + s.translate.x - worldX, s.centroid.y + s.translate.y - worldY);
             const threshold = 180 * Math.max(0.5, s.scale);
             if (d < threshold) {
               const score = d / s.scale;
@@ -635,12 +659,12 @@ export default function App() {
               invalidateCache();
               const newStroke: Stroke = {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-                points: [{ x: screenX, y: screenY }],
+                points: [{ x: worldX, y: worldY }],
                 color: brushColorRef.current,
                 thickness: brushThicknessRef.current,
                 scale: 1, rotation: 0, translate: { x: 0, y: 0 },
-                centroid: { x: screenX, y: screenY },
-                bounds: { minX: screenX, minY: screenY, maxX: screenX, maxY: screenY },
+                centroid: { x: worldX, y: worldY },
+                bounds: { minX: worldX, minY: worldY, maxX: worldX, maxY: worldY },
                 birthTime: performance.now()
               };
               penDownRippleRef.current = { x: screenX, y: screenY, time: performance.now() };
@@ -654,14 +678,14 @@ export default function App() {
               const activeStroke = findStrokeById(newActiveStrokeId ?? '');
               if (activeStroke && activeStroke.points.length > 0) {
                 const prevPt = activeStroke.points[activeStroke.points.length - 1];
-                if (Math.hypot(prevPt.x - screenX, prevPt.y - screenY) > 1.5) {
-                  activeStroke.points.push({ x: screenX, y: screenY });
+                if (Math.hypot(prevPt.x - worldX, prevPt.y - worldY) > 1.5) {
+                  activeStroke.points.push({ x: worldX, y: worldY });
                   // Expand bounds live so renderStroke shows correct bounding box
                   const b = activeStroke.bounds;
-                  if (screenX < b.minX) b.minX = screenX;
-                  if (screenY < b.minY) b.minY = screenY;
-                  if (screenX > b.maxX) b.maxX = screenX;
-                  if (screenY > b.maxY) b.maxY = screenY;
+                  if (worldX < b.minX) b.minX = worldX;
+                  if (worldY < b.minY) b.minY = worldY;
+                  if (worldX > b.maxX) b.maxX = worldX;
+                  if (worldY > b.maxY) b.maxY = worldY;
                 }
               }
             }
@@ -683,7 +707,7 @@ export default function App() {
           let minScore = Number.MAX_VALUE;
           for (const s of allVisibleStrokes) {
             if (s.points.length === 0) continue;
-            const d = Math.hypot(s.centroid.x + s.translate.x - screenX, s.centroid.y + s.translate.y - screenY);
+            const d = Math.hypot(s.centroid.x + s.translate.x - worldX, s.centroid.y + s.translate.y - worldY);
             const threshold = 220 * Math.max(0.5, s.scale);
             if (d < threshold) {
               const score = d / s.scale;

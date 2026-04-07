@@ -395,24 +395,27 @@ export function useHandTracking(
             const gestureByHand:  Record<string, Gesture>     = {};
 
             // ─── Logical Hand Assignment ───
-            // Ignore MediaPipe's 'handednesses' completely. 
-            // If 1 hand: it is Right (Drawing hand).
-            // If 2 hands: the one with a lower average X is Left (in flipped webcam space, left side of screen).
-            let currentHandsInfo = results.landmarks.map(rawLm => {
+            // Use MediaPipe's handednesses labels, INVERTED for mirror/selfie view.
+            // MediaPipe reports from the camera's perspective: camera "Left" = user's Right hand.
+            let currentHandsInfo = results.landmarks.map((rawLm, idx) => {
+              const mpLabel = results.handednesses?.[idx]?.[0]?.categoryName;
+              const userHand: 'Left' | 'Right' = mpLabel === 'Left' ? 'Right' : 'Left';
               const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
-              return { rawLm, cx, assigned: 'Right' as 'Left' | 'Right' }; 
+              return { rawLm, cx, assigned: userHand };
             });
 
-            if (currentHandsInfo.length === 2) {
-               // Webcam is horizontally flipped. X=0 is left of screen, X=1 is right of screen.
-               // Normally, user's Right hand appears on the left side of the screen (lower X).
-               // user's Left hand appears on the right side of the screen (higher X).
-               const rightHandIdx = currentHandsInfo[0].cx < currentHandsInfo[1].cx ? 0 : 1;
-               currentHandsInfo[rightHandIdx].assigned = 'Right';
-               currentHandsInfo[1 - rightHandIdx].assigned = 'Left';
-            } else if (currentHandsInfo.length > 2) {
-               // Fallback if ghosts appear
-               currentHandsInfo = currentHandsInfo.slice(0, 2);
+            // Cap to 2 hands max (discard phantom detections)
+            if (currentHandsInfo.length > 2) {
+              currentHandsInfo = currentHandsInfo.slice(0, 2);
+            }
+
+            // If both hands got the same label (MediaPipe error), fall back to X-position tiebreaker.
+            // In raw webcam coords, user's Right hand has lower X.
+            if (currentHandsInfo.length === 2 &&
+                currentHandsInfo[0].assigned === currentHandsInfo[1].assigned) {
+              const rightIdx = currentHandsInfo[0].cx < currentHandsInfo[1].cx ? 0 : 1;
+              currentHandsInfo[rightIdx].assigned = 'Right';
+              currentHandsInfo[1 - rightIdx].assigned = 'Left';
             }
 
             const newHands: HandState[] = currentHandsInfo.map(({ rawLm, assigned }) => {
