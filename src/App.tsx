@@ -47,7 +47,7 @@ function SettingsModal({
         <button onClick={closeModal} className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors"><span className="material-symbols-outlined">close</span></button>
         <h2 className="text-xl font-space-grotesk text-primary mb-6 tracking-widest uppercase">System Settings</h2>
         <div className="space-y-4 text-sm text-white/70">
-          <div className="flex justify-between items-center bg-white/5 p-4 rounded border border-white/5">
+          <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl border border-white/5">
             <div>
               <label className="font-space-grotesk tracking-wide text-xs uppercase block">Tracking Engine</label>
               <span className="text-[10px] text-white/30">Hand detection performance mode</span>
@@ -55,14 +55,14 @@ function SettingsModal({
             <select
               value={draftQuality}
               onChange={(e) => setDraftQuality(e.target.value as HandTrackingConfig['quality'])}
-              className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded px-2 py-1 text-xs"
+              className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded-2xl px-2 py-1 text-xs"
             >
               <option value="high">High Perf</option>
               <option value="balanced">Balanced</option>
               <option value="economy">Economy</option>
             </select>
           </div>
-          <div className="flex justify-between items-center bg-white/5 p-4 rounded border border-white/5">
+          <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl border border-white/5">
             <div>
               <label className="font-space-grotesk tracking-wide text-xs uppercase block">Hand Smoothing</label>
               <span className="text-[10px] text-white/30">EMA filter strength (higher = smoother)</span>
@@ -76,7 +76,7 @@ function SettingsModal({
               <span className="text-[10px] text-white/40 w-6">{draftSmoothing}</span>
             </div>
           </div>
-          <div className="flex justify-between items-center bg-white/5 p-4 rounded border border-white/5">
+          <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl border border-white/5">
             <div>
               <label className="font-space-grotesk tracking-wide text-xs uppercase block">UI Theme</label>
               <span className="text-[10px] text-white/30">Color accent for the interface</span>
@@ -84,7 +84,7 @@ function SettingsModal({
             <select
               value={draftTheme}
               onChange={(e) => setDraftTheme(e.target.value as ThemeId)}
-              className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded px-2 py-1 text-xs"
+              className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded-2xl px-2 py-1 text-xs"
             >
               <option value="holo-blue">Holo Blue</option>
               <option value="crimson">Crimson</option>
@@ -115,7 +115,7 @@ function DepthPanel({ brushThicknessRef }: { brushThicknessRef: React.MutableRef
         <h3 className="text-[10px] uppercase tracking-widest font-space-grotesk text-primary opacity-60">Stroke Thickness</h3>
         <span className="text-xs text-white/50">{thickness}px</span>
       </div>
-      <input type="range" min="1" max="30" value={thickness} className="w-full h-1 bg-white/20 rounded outline-none appearance-none accent-primary"
+      <input type="range" min="1" max="30" value={thickness} className="w-full h-1 bg-white/20 rounded-2xl outline-none appearance-none accent-primary"
         onChange={(e) => {
           const val = parseInt(e.target.value);
           brushThicknessRef.current = val;
@@ -564,6 +564,23 @@ export default function App() {
 
     // Inverse-transform screen coordinates through the global zoom/rotate to get world-space coords.
     // Stroke points are stored in world space; the render loop applies the forward transform.
+
+    const getMappedCoords = (lm: { x: number; y: number }) => {
+      const cw = canvas?.width || window.innerWidth;
+      const ch = canvas?.height || window.innerHeight;
+      const vw = videoRef.current ? videoRef.current.videoWidth || 1280 : 1280;
+      const vH = videoRef.current ? videoRef.current.videoHeight || 720 : 720;
+      const scale = Math.max(cw / vw, ch / vH);
+      const mappedW = vw * scale;
+      const mappedH = vH * scale;
+      const offsetX = (cw - mappedW) / 2;
+      const offsetY = (ch - mappedH) / 2;
+      return {
+        x: offsetX + ((1 - lm.x) * mappedW),
+        y: offsetY + (lm.y * mappedH)
+      };
+    };
+
     function screenToWorld(sx: number, sy: number): { x: number; y: number } {
       const t = globalTransformRef.current;
       const cw = canvas!.width / 2;
@@ -628,8 +645,9 @@ export default function App() {
 
       if (rightHand) {
         const indexTip = rightHand.landmarks[8];
-        const screenX = (1 - indexTip.x) * canvas!.width;
-        const screenY = indexTip.y * canvas!.height;
+        const mapped = getMappedCoords(indexTip);
+        const screenX = mapped.x;
+        const screenY = mapped.y;
         // World-space coordinates for stroke points and hit-testing (accounts for zoom/rotate)
         const world = screenToWorld(screenX, screenY);
         const worldX = world.x;
@@ -797,8 +815,9 @@ export default function App() {
         const state = leftHandState.current;
         const indexTip = leftHand.landmarks[8];
         const wrist = leftHand.landmarks[0];
-        const ptX = (1 - indexTip.x) * canvas!.width;
-        const ptY = indexTip.y * canvas!.height;
+        const mappedPt = getMappedCoords(indexTip);
+        const ptX = mappedPt.x;
+        const ptY = mappedPt.y;
 
         if (leftHand.gesture === 'Peace') {
           currentMode = 'Move';
@@ -832,8 +851,9 @@ export default function App() {
 
         if (leftHand.gesture === 'Pinch') {
           currentMode = 'Scale';
-          const currentX = (1 - indexTip.x) * canvas!.width;
-          const currentY = indexTip.y * canvas!.height;
+          const mappedCurr = getMappedCoords(indexTip);
+          const currentX = mappedCurr.x;
+          const currentY = mappedCurr.y;
           if (!state.isScaling) {
             state.isScaling = true;
             state.initialPointer = { x: currentX, y: currentY };
@@ -1776,7 +1796,7 @@ export default function App() {
         <div className="absolute bottom-8 right-8 w-64 aspect-video glass-panel overflow-hidden border border-white/10 z-20">
           <div className="absolute inset-0 bg-zinc-900/60 z-0 flex items-center justify-center text-white/50 text-xs text-center p-2">
             {!isReady && !error && "Loading AI Models..."}
-            {error && <span className="text-red-500 font-bold bg-red-500/10 px-2 py-1 rounded">{error}</span>}
+            {error && <span className="text-red-500 font-bold bg-red-500/10 px-2 py-1 rounded-2xl">{error}</span>}
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover mix-blend-luminosity opacity-40 -scale-x-100"></video>
             <canvas ref={hudCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none object-cover -scale-x-100"></canvas>
           </div>
@@ -1871,27 +1891,27 @@ export default function App() {
               <button onClick={() => setActiveModal(null)} className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors"><span className="material-symbols-outlined">close</span></button>
               <h2 className="text-2xl font-space-grotesk text-primary mb-8 tracking-widest uppercase">Gesture Mapping Guide</h2>
               <div className="grid grid-cols-2 gap-6 text-sm">
-                <div className="p-5 bg-white/5 rounded border border-white/5 hover:border-primary/30 transition-colors">
+                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
                   <strong className="text-primary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Right Index Point</strong>
                   <span className="text-white/60">Draw continuous strokes on canvas</span>
                 </div>
-                <div className="p-5 bg-white/5 rounded border border-white/5 hover:border-primary/30 transition-colors">
+                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
                   <strong className="text-secondary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Right Fist</strong>
                   <span className="text-white/60">Clear all strokes on the active layer</span>
                 </div>
-                <div className="p-5 bg-white/5 rounded border border-white/5 hover:border-primary/30 transition-colors">
+                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
                   <strong className="text-primary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Right Pinch</strong>
                   <span className="text-white/60">Select nearest stroke for manipulation</span>
                 </div>
-                <div className="p-5 bg-white/5 rounded border border-white/5 hover:border-primary/30 transition-colors">
+                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
                   <strong className="text-primary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Left Peace Sign</strong>
                   <span className="text-white/60">Grab and move active stroke globally</span>
                 </div>
-                <div className="p-5 bg-white/5 rounded border border-white/5 hover:border-secondary/30 transition-colors">
+                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-secondary/30 transition-colors">
                   <strong className="text-secondary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Left Pinch</strong>
                   <span className="text-white/60">Scale object size using thumb/index spread</span>
                 </div>
-                <div className="p-5 bg-white/5 rounded border border-white/5 hover:border-primary/30 transition-colors">
+                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
                   <strong className="text-primary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Left Open Palm</strong>
                   <span className="text-white/60">Snap-rotate active stroke based on wrist angle</span>
                 </div>
@@ -1905,7 +1925,7 @@ export default function App() {
           <div className="absolute left-24 top-1/3 -translate-y-1/2 glass-panel p-5 z-40 flex flex-col gap-4 border border-primary/20 slide-in-from-left animate-in duration-300">
             <h3 className="text-[10px] uppercase tracking-widest font-space-grotesk text-primary opacity-60 mb-1 border-b border-white/5 pb-2">Color Palette</h3>
             <div className="grid grid-cols-2 gap-3">
-              {['#8ff5ff', '#ff51fa', '#51ff56', '#ff5151', '#fff', '#000', '#ffd000', '#9c51ff'].map(c => (
+              {['#003D6A', '#FF3B30', '#FF9F0A', '#30D158', '#34C1FA', '#5E5CE6', '#FF6B5B', '#1C1C1E'].map(c => (
                 <button key={c} onClick={() => { brushColorRef.current = c; setBrushColorState(c); setActiveSidebarPanel(null); showToast('Active color updated'); }} className={`w-10 h-10 rounded-full border-2 transition-transform hover:scale-110 ${brushColorState === c ? 'border-primary scale-110 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'border-white/20'}`} style={{ backgroundColor: c }}></button>
               ))}
             </div>
@@ -1939,7 +1959,7 @@ export default function App() {
                   <div
                     key={layer.id}
                     onClick={() => { activeLayerIdRef.current = layer.id; syncLayersState(); }}
-                    className={`group relative flex items-center gap-3 px-4 py-3 rounded cursor-pointer transition-all border ${isActive
+                    className={`group relative flex items-center gap-3 px-4 py-3 rounded-2xl cursor-pointer transition-all border ${isActive
                         ? 'bg-primary/10 border-primary/40 shadow-[0_0_12px_rgba(143,245,255,0.12)]'
                         : 'bg-white/3 border-white/8 hover:border-white/20 hover:bg-white/5'
                       }`}
@@ -1976,7 +1996,7 @@ export default function App() {
                       onBlur={(e) => renameLayer(layer.id, e.currentTarget.textContent ?? layer.name)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (e.currentTarget as HTMLElement).blur(); } }}
                       onClick={(e) => e.stopPropagation()}
-                      className={`flex-1 min-w-0 text-xs font-space-grotesk truncate outline-none rounded px-1 py-0.5 focus:bg-white/10 ${isActive ? 'text-primary' : layer.visible ? 'text-white/80' : 'text-white/30 line-through'
+                      className={`flex-1 min-w-0 text-xs font-space-grotesk truncate outline-none rounded-md px-1 py-0.5 focus:bg-white/10 ${isActive ? 'text-primary' : layer.visible ? 'text-white/80' : 'text-white/30 line-through'
                         }`}
                     >
                       {layer.name}
@@ -2029,7 +2049,7 @@ export default function App() {
               ].map(({ icon, label }) => (
                 <div
                   key={label}
-                  className="aspect-square bg-white/5 border border-white/10 rounded flex flex-col items-center justify-center hover:border-primary/50 hover:bg-primary/5 hover:-translate-y-1 transition-all cursor-pointer group"
+                  className="aspect-square bg-white/5 border border-white/10 rounded-full flex flex-col items-center justify-center hover:border-primary/50 hover:bg-primary/5 hover:-translate-y-1 transition-all cursor-pointer group"
                   onClick={() => {
                     const activeLayer = layersRef.current.find((l: Layer) => l.id === activeLayerIdRef.current)
                       ?? layersRef.current[layersRef.current.length - 1];
