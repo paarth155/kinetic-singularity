@@ -1254,10 +1254,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="bg-zinc-900 text-on-surface h-screen w-screen overflow-hidden flex items-center justify-center p-12">
-      {/* Centered Floating Canvas */}
-      <div className="w-full h-full bg-[#FAFAFA] rounded-[3rem] shadow-[0_40px_80px_rgba(0,10,30,0.2)] relative flex flex-col border border-white/20">
-      
+    <div className="bg-[#FAFAFA] text-on-surface h-screen w-screen overflow-hidden relative flex flex-col">
       {/* TopAppBar */}
       <header className="absolute top-0 left-0 w-full flex justify-between items-center px-12 h-20 z-50 bg-transparent border-b border-black/5">
         {/* Toast Notification */}
@@ -2165,7 +2162,6 @@ export default function App() {
         )}
 
       </main>
-      </div>
     </div>
   );
 }
