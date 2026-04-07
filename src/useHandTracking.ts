@@ -44,6 +44,8 @@ export function useHandTracking(
   const LATENCY_DISPLAY_INTERVAL_MS = 500; // 2fps — number is decorative
 
   const landmarkerRef = useRef<HandLandmarker | null>(null);
+  const lastFrameTimeRef = useRef<number>(performance.now());
+  const entryBufferRef = useRef<Record<string, Landmark[][]>>({ Left: [], Right: [] });
   const drawingUtilsRef = useRef<DrawingUtils | null>(null);
   const requestRef = useRef<number>(0);
   const configRef = useRef<HandTrackingConfig>(config);
@@ -246,6 +248,8 @@ export function useHandTracking(
     const GRACE_FRAMES = 10; // Frames to remember a gesture if it temporarily drops to None
 
     function stabiliseGesture(raw: Gesture, history: GestureHistory): Gesture {
+      if (raw !== 'None') history.graceTimer = 0;
+
       if (history.raw === raw) {
         history.count = Math.min(history.count + 1, 60);
       } else {
@@ -275,7 +279,24 @@ export function useHandTracking(
      * Velocity-adaptive EMA: fast motion → high alpha (responsive), still → low alpha (stable).
      * Uses only the XY delta for velocity (Z is inherently noisier and less important for 2D drawing).
      */
-    function smoothLandmarks(raw: Landmark[], prevSmoothed: Landmark[]): Landmark[] {
+    function smoothLandmarks(raw: Landmark[], prevSmoothed: Landmark[], dt: number, hand: string): Landmark[] {
+      const buffer = entryBufferRef.current[hand];
+      if (buffer.length < 4) {
+        buffer.push(raw);
+        if (buffer.length === 4) {
+          // Compute average of the 4 landmark frames for an unconditionally stable starting position
+          return raw.map((lmRow, i) => {
+            const sumX = buffer.reduce((acc, frame) => acc + frame[i].x, 0);
+            const sumY = buffer.reduce((acc, frame) => acc + frame[i].y, 0);
+            const sumZ = buffer.reduce((acc, frame) => acc + (frame[i].z ?? 0), 0);
+            return { x: sumX / 4, y: sumY / 4, z: sumZ / 4, visibility: lmRow.visibility };
+          });
+        }
+        return raw; // Skip EMA entirely until buffer fills
+      }
+
+      const dtScale = Math.min(dt / 16.67, 2.5);
+
       return raw.map((lm, i) => {
         const prev = prevSmoothed[i];
         if (!prev) return lm;
@@ -292,7 +313,7 @@ export function useHandTracking(
         const s = configRef.current.smoothing / 100;
         const baseAlpha = 0.50 - (s * 0.45);   // [0.50 .. 0.05]
         const targetAlpha = 0.90 - (s * 0.20); // [0.90 .. 0.70]
-        const alpha = Math.min(targetAlpha, Math.max(baseAlpha, speed * 18.0));
+        const alpha = Math.min(targetAlpha, Math.max(baseAlpha, (speed * 18.0) * dtScale));
 
         return {
           x: prev.x + alpha * rawDx,
@@ -384,6 +405,8 @@ export function useHandTracking(
       try {
         if (video.currentTime !== lastVideoTime && landmarkerRef.current) {
           const t0 = performance.now();
+          const dt = Math.max(1, t0 - lastFrameTimeRef.current);
+          lastFrameTimeRef.current = t0;
           lastVideoTime = video.currentTime;
           const results = landmarkerRef.current.detectForVideo(video, t0);
 
@@ -442,11 +465,14 @@ export function useHandTracking(
 
                if (unassigned.length === 1) {
                  // The "Drawing Hand First" rule: if one hand enters, it takes the Drawing slot (Right) if available.
+                 // Only default to Right if we don't have spatial history identifying the Left hand recently.
                  const info = unassigned[0];
-                 if (!assignedStatus.Right) {
+                 if (!assignedStatus.Right && !smoothed['Left']) {
                    info.assigned = 'Right';
                  } else if (!assignedStatus.Left) {
                    info.assigned = 'Left';
+                 } else if (!assignedStatus.Right) {
+                   info.assigned = 'Right';
                  }
                } else if (unassigned.length >= 2) {
                  // Two hands appeared simultaneously. Lowest X = Right, next = Left.
@@ -478,7 +504,7 @@ export function useHandTracking(
 
               // Apply velocity-adaptive EMA smoothing
               const prev    = smoothed[hand] ?? rawLm;
-              const lm      = smoothLandmarks(rawLm, prev);
+              const lm      = smoothLandmarks(rawLm, prev, dt, hand);
               smoothed[hand] = lm;
 
               // Detect + debounce gesture
@@ -510,6 +536,7 @@ export function useHandTracking(
                 delete smoothed[hand];
                 pinchActive[hand]    = false;
                 gestureHistory[hand] = { raw: 'None', stable: 'None', count: 0, graceTimer: 0 };
+                entryBufferRef.current[hand] = []; // Reset warmup buffer so next entry re-stabilizes
               }
             }
           }

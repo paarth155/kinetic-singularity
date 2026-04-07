@@ -510,7 +510,11 @@ export default function App() {
                  // Exponential falloff for sharper tapers
                  const thicknessScale = 1.0 - (speedFactor * 0.7); 
                  
-                 let layerThick = baseThickness * thicknessScale;
+                 // Z-depth thickness: use averaged per-point z if present, else fall back to baseThickness
+                 const zThick = (p1.z !== undefined || prevPoint.z !== undefined)
+                   ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
+                   : baseThickness;
+                 let layerThick = zThick * thicknessScale;
                  if (layer === 0) layerThick *= 1.5;
                  else if (layer === 2) layerThick *= 0.3;
                  
@@ -529,7 +533,11 @@ export default function App() {
              const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
              const speedFactor = Math.min(1, Math.max(0, dist / 40));
              const thicknessScale = 1.0 - (speedFactor * 0.7);
-             let layerThick = baseThickness * thicknessScale;
+             // Z-depth thickness for tail segment
+             const tailZThick = (p1.z !== undefined || prevPoint.z !== undefined)
+               ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
+               : baseThickness;
+             let layerThick = tailZThick * thicknessScale;
              if (layer === 0) layerThick *= 1.5;
              else if (layer === 2) layerThick *= 0.3;
              
@@ -658,9 +666,13 @@ export default function App() {
             if (!rightWasPointing.current) {
               // Finalize previous stroke — bake it into cache
               invalidateCache();
+              // Capture initial depth for first point
+              const rawZ0 = rightHand.landmarks[8].z ?? 0;
+              const zNorm0 = Math.max(0, Math.min(1, (-rawZ0 + 0.1) / 0.3));
+              const dynThick0 = brushThicknessRef.current * (0.6 + zNorm0 * 0.8);
               const newStroke: Stroke = {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-                points: [{ x: worldX, y: worldY }],
+                points: [{ x: worldX, y: worldY, z: dynThick0 }],
                 color: brushColorRef.current,
                 thickness: brushThicknessRef.current,
                 scale: 1, rotation: 0, translate: { x: 0, y: 0 },
@@ -679,8 +691,13 @@ export default function App() {
               const activeStroke = findStrokeById(newActiveStrokeId ?? '');
               if (activeStroke && activeStroke.points.length > 0) {
                 const prevPt = activeStroke.points[activeStroke.points.length - 1];
-                if (Math.hypot(prevPt.x - worldX, prevPt.y - worldY) > 1.5) {
-                  activeStroke.points.push({ x: worldX, y: worldY });
+                const pointMinDist = 1.5 / globalTransformRef.current.scale;
+                if (Math.hypot(prevPt.x - worldX, prevPt.y - worldY) > pointMinDist) {
+                  // Compute depth-driven dynamic thickness and store in point.z
+                  const rawZ = rightHand.landmarks[8].z ?? 0;
+                  const zNorm = Math.max(0, Math.min(1, (-rawZ + 0.1) / 0.3));
+                  const dynamicThickness = brushThicknessRef.current * (0.6 + zNorm * 0.8);
+                  activeStroke.points.push({ x: worldX, y: worldY, z: dynamicThickness });
                   // Expand bounds live so renderStroke shows correct bounding box
                   const b = activeStroke.bounds;
                   if (worldX < b.minX) b.minX = worldX;
