@@ -135,10 +135,9 @@ export function useHandTracking(
 
     const lostHandFrames: Record<string, number> = { Left: 0, Right: 0 };
 
-    // 640×480 is sufficient for hand landmark detection and saves ~5× processing vs 1080p
     const streamRef = { current: null as MediaStream | null };
     navigator.mediaDevices
-      .getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } } })
+      .getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } } })
       .then((stream) => {
         // Guard: component may have unmounted while getUserMedia was in flight
         if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
