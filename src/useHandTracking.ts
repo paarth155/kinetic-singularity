@@ -429,9 +429,12 @@ export function useHandTracking(
               const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
               const cy = rawLm.reduce((sum, p) => sum + p.y, 0) / rawLm.length;
               
-              // MediaPipe raw classifier output: inverted because of the unmirrored camera capture
-              const predictedHand = results.handednesses?.[idx]?.[0]?.categoryName;
-              const physicalHandTarget = predictedHand === 'Left' ? 'Right' : predictedHand === 'Right' ? 'Left' : null;
+              // Native Target Classification + Confidence Scoring
+              const prediction = results.handednesses?.[idx]?.[0];
+              const predictedHand = prediction?.categoryName;
+              // Only trust MediaPipe classifer if it's >90% certain to prevent flickering
+              const isConfident = prediction && prediction.score > 0.90;
+              const physicalHandTarget = (isConfident && predictedHand === 'Left') ? 'Right' : (isConfident && predictedHand === 'Right') ? 'Left' : null;
 
               return { rawLm, cx, cy, assigned: null as 'Left' | 'Right' | null, physicalHandTarget };
             });
@@ -467,20 +470,45 @@ export function useHandTracking(
             const unassigned = currentHandsInfo.filter(info => !info.assigned);
             
             if (unassigned.length > 0) {
-               // Assign fresh hands cleanly based on MediaPipe's native prediction logic, 
-               // trusting the neural network over blind slot-filling rules.
-               unassigned.forEach(info => {
+               if (unassigned.length === 1) {
+                 const info = unassigned[0];
+                 // Single hand detected.
+                 // If the classifier is absolutely sure, use its label.
                  if (info.physicalHandTarget && !assignedStatus[info.physicalHandTarget as 'Left' | 'Right']) {
                    info.assigned = info.physicalHandTarget as 'Left' | 'Right';
                    assignedStatus[info.physicalHandTarget as 'Left' | 'Right'] = true;
-                 } else if (!assignedStatus.Right) {
-                   info.assigned = 'Right';
+                 } else {
+                   // Fallback logic when MediaPipe is unsure (< 90% confidence):
+                   // If ONLY ONE specific hand is NOT ON SCREEN yet from recent history, it claims that identity.
+                   if (!assignedStatus.Right && !smoothed['Left']) {
+                     info.assigned = 'Right';
+                   } else if (!assignedStatus.Left) {
+                     info.assigned = 'Left';
+                   } else if (!assignedStatus.Right) {
+                     info.assigned = 'Right';
+                   }
+                 }
+               } else if (unassigned.length >= 2) {
+                 // Two hands entered simultaneously or are both unassigned.
+                 // Lowest X = physical Right hand, next = physical Left hand. Math is absolute!
+                 unassigned.sort((a, b) => a.cx - b.cx);
+                 
+                 if (!assignedStatus.Right) {
+                   unassigned[0].assigned = 'Right';
                    assignedStatus.Right = true;
-                 } else if (!assignedStatus.Left) {
-                   info.assigned = 'Left';
+                 } else {
+                   unassigned[0].assigned = 'Left';
                    assignedStatus.Left = true;
                  }
-               });
+
+                 if (!assignedStatus.Left) {
+                   unassigned[1].assigned = 'Left';
+                   assignedStatus.Left = true;
+                 } else if (!assignedStatus.Right) {
+                   unassigned[1].assigned = 'Right';
+                   assignedStatus.Right = true;
+                 }
+               }
             }
 
             // Filter out any unassignable 3rd ghost hands
