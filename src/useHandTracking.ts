@@ -395,17 +395,15 @@ export function useHandTracking(
             const gestureByHand:  Record<string, Gesture>     = {};
 
             // ─── Logical Hand Assignment ───
-            // 1. We use MediaPipe's neural-net handedness label. The video element's source is 
-            //    unmirrored (CSS scaleX(-1) is only visual). MediaPipe correctly predicts physical hand identity.
-            // 2. We use spatial tracking to lock those identities. If the user points to the camera,
-            //    MediaPipe's classification will flicker. Spatial tracking eliminates this flicker perfectly.
-            
-            let currentHandsInfo = results.landmarks.map((rawLm, idx) => {
-              const mpLabel = results.handednesses?.[idx]?.[0]?.categoryName;
-              const labelHint = ((mpLabel === 'Left' || mpLabel === 'Right') ? mpLabel : 'Right') as 'Left' | 'Right';
+            // MediaPipe's 'handednesses' classifier is inherently broken for selfie cameras when pointing 
+            // because the back of a Right hand visually looks identical to a first-person Left hand. 
+            // We ignore it entirely. Instead we use a bulletproof combination of spatial tracking 
+            // (to anchor identities and reject ghosts) and X-coordinate sorting for fresh detections.
+
+            let currentHandsInfo = results.landmarks.map(rawLm => {
               const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
               const cy = rawLm.reduce((sum, p) => sum + p.y, 0) / rawLm.length;
-              return { rawLm, cx, cy, labelHint, assigned: null as 'Left' | 'Right' | null };
+              return { rawLm, cx, cy, assigned: null as 'Left' | 'Right' | null };
             });
 
             // Step 1: Spatial tracking lock for established hands
@@ -435,22 +433,40 @@ export function useHandTracking(
               }
             }
 
-            // Step 2: Fallback to model's label for any new/unlocked hands
-            currentHandsInfo.forEach((info) => {
-              if (!info.assigned) {
-                if (!assignedStatus[info.labelHint]) {
-                  info.assigned = info.labelHint;
-                  assignedStatus[info.labelHint] = true;
-                } else {
-                  // The preferred label is taken. Fallback to the available one.
-                  const other = info.labelHint === 'Left' ? 'Right' : 'Left';
-                  if (!assignedStatus[other]) {
-                    info.assigned = other;
-                    assignedStatus[other] = true;
-                  }
-                }
-              }
-            });
+            // Step 2: Assign any fresh/unlocked hands using the core rules
+            const unassigned = currentHandsInfo.filter(info => !info.assigned);
+            
+            if (unassigned.length > 0) {
+               // Sort strictly ascending by X. In unmirrored camera coords, physical Right is on the lower-X side.
+               unassigned.sort((a, b) => a.cx - b.cx);
+
+               if (unassigned.length === 1) {
+                 // The "Drawing Hand First" rule: if one hand enters, it takes the Drawing slot (Right) if available.
+                 const info = unassigned[0];
+                 if (!assignedStatus.Right) {
+                   info.assigned = 'Right';
+                 } else if (!assignedStatus.Left) {
+                   info.assigned = 'Left';
+                 }
+               } else if (unassigned.length >= 2) {
+                 // Two hands appeared simultaneously. Lowest X = Right, next = Left.
+                 if (!assignedStatus.Right) {
+                   unassigned[0].assigned = 'Right';
+                   assignedStatus.Right = true;
+                 } else {
+                   unassigned[0].assigned = 'Left';
+                   assignedStatus.Left = true;
+                 }
+
+                 if (!assignedStatus.Left) {
+                   unassigned[1].assigned = 'Left';
+                   assignedStatus.Left = true;
+                 } else if (!assignedStatus.Right) {
+                   unassigned[1].assigned = 'Right';
+                   assignedStatus.Right = true;
+                 }
+               }
+            }
 
             // Filter out any unassignable 3rd ghost hands
             currentHandsInfo = currentHandsInfo.filter(info => info.assigned !== null).slice(0, 2);
