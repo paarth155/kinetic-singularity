@@ -1254,9 +1254,12 @@ export default function App() {
   }, []);
 
   return (
-    <div className="bg-background text-on-surface h-screen w-screen overflow-hidden">
+    <div className="bg-zinc-900 text-on-surface h-screen w-screen overflow-hidden flex items-center justify-center p-12">
+      {/* Centered Floating Canvas */}
+      <div className="w-full h-full bg-[#FAFAFA] rounded-[3rem] shadow-[0_40px_80px_rgba(0,10,30,0.2)] relative flex flex-col border border-white/20">
+      
       {/* TopAppBar */}
-      <header className="fixed top-0 w-full flex justify-between items-center px-8 h-16 z-50 bg-transparent backdrop-blur-xl border-b border-white/5 shadow-[0_0_50px_rgba(143,245,255,0.08)]">
+      <header className="absolute top-0 left-0 w-full flex justify-between items-center px-12 h-20 z-50 bg-transparent border-b border-black/5">
         {/* Toast Notification */}
         {toastMessage && (
           <div className="fixed top-24 left-1/2 -translate-x-1/2 z-50 bg-black/80 border border-primary/40 backdrop-blur-xl px-6 py-3 text-primary text-sm font-space-grotesk tracking-wider animate-in fade-in slide-in-from-top-4 duration-300 shadow-[0_0_20px_rgba(143,245,255,0.2)]">
@@ -1266,18 +1269,18 @@ export default function App() {
 
         <div className="text-xl font-bold tracking-widest text-primary space-grotesk">KINETIC_SINGULARITY</div>
         <nav className="flex gap-8">
-          <a onClick={(e) => { e.preventDefault(); setActiveTab('Draw'); }} className={`cursor-pointer font-space-grotesk tracking-tight text-sm uppercase transition-all duration-300 ${activeTab === 'Draw' ? 'text-primary border-b border-primary pb-1' : 'text-slate-500 hover:text-slate-300'}`} href="#">Draw</a>
-          <a onClick={(e) => { e.preventDefault(); setActiveTab('Layers'); }} className={`cursor-pointer font-space-grotesk tracking-tight text-sm uppercase transition-all duration-300 ${activeTab === 'Layers' ? 'text-primary border-b border-primary pb-1' : 'text-slate-500 hover:text-slate-300'}`} href="#">Layers</a>
-          <a onClick={(e) => { e.preventDefault(); setActiveTab('Assets'); }} className={`cursor-pointer font-space-grotesk tracking-tight text-sm uppercase transition-all duration-300 ${activeTab === 'Assets' ? 'text-primary border-b border-primary pb-1' : 'text-slate-500 hover:text-slate-300'}`} href="#">Assets</a>
+          <a onClick={(e) => { e.preventDefault(); setActiveTab('Draw'); }} className={`cursor-pointer font-space-grotesk tracking-tight text-sm uppercase transition-all duration-300 ${activeTab === 'Draw' ? 'text-primary border-b border-primary pb-1' : 'text-slate-400 hover:text-[#003D6A]'}`} href="#">Draw</a>
+          <a onClick={(e) => { e.preventDefault(); setActiveTab('Layers'); }} className={`cursor-pointer font-space-grotesk tracking-tight text-sm uppercase transition-all duration-300 ${activeTab === 'Layers' ? 'text-primary border-b border-primary pb-1' : 'text-slate-400 hover:text-[#003D6A]'}`} href="#">Layers</a>
+          <a onClick={(e) => { e.preventDefault(); setActiveTab('Assets'); }} className={`cursor-pointer font-space-grotesk tracking-tight text-sm uppercase transition-all duration-300 ${activeTab === 'Assets' ? 'text-primary border-b border-primary pb-1' : 'text-slate-400 hover:text-[#003D6A]'}`} href="#">Assets</a>
         </nav>
         <div className="flex items-center gap-6">
-          <button onClick={() => setActiveModal('Settings')} className={`transition-all ${activeModal === 'Settings' ? 'text-primary' : 'text-slate-500 hover:text-primary'}`}>
+          <button onClick={() => setActiveModal('Settings')} className={`transition-all ${activeModal === 'Settings' ? 'text-primary' : 'text-slate-400 hover:text-[#003D6A]'}`}>
             <span className="material-symbols-outlined">settings</span>
           </button>
-          <button onClick={() => setActiveModal('History')} className={`transition-all ${activeModal === 'History' ? 'text-primary' : 'text-slate-500 hover:text-primary'}`} title="Canvas Info">
+          <button onClick={() => setActiveModal('History')} className={`transition-all ${activeModal === 'History' ? 'text-primary' : 'text-slate-400 hover:text-[#003D6A]'}`} title="Canvas Info">
             <span className="material-symbols-outlined">info</span>
           </button>
-          <button onClick={() => { navigator.clipboard.writeText(window.location.href); showToast('Project link copied to clipboard!'); }} className="text-slate-500 hover:text-primary transition-all">
+          <button onClick={() => { navigator.clipboard.writeText(window.location.href); showToast('Project link copied to clipboard!'); }} className="text-slate-400 hover:text-[#003D6A] transition-all">
             <span className="material-symbols-outlined">share</span>
           </button>
           <div className="w-8 h-8 bg-surface-container-highest flex items-center justify-center">
@@ -1287,14 +1290,8 @@ export default function App() {
       </header>
 
       {/* SideNavBar */}
-      <aside className="fixed left-0 top-0 h-full w-20 bg-zinc-950/40 backdrop-blur-2xl border-r border-white/5 flex flex-col py-20 z-40">
-        <div className="flex flex-col items-center mb-10">
-          <div className="w-10 h-10 border border-primary/20 flex items-center justify-center mb-2">
-            <span className="material-symbols-outlined text-primary text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>deployed_code</span>
-          </div>
-          <div className="text-cyan-400 font-bold text-[10px] space-grotesk tracking-tighter">SINGULARITY</div>
-        </div>
-        <nav className="flex-1">
+      <aside className="absolute left-8 top-1/2 -translate-y-1/2 bg-white border border-black/5 flex flex-col py-6 px-3 gap-2 z-40 shadow-[0_10px_30px_rgba(0,61,106,0.08)] rounded-[2rem]">
+        <nav className="flex-1 flex flex-col gap-2">
           {/* Select tool */}
           <div onClick={() => {
             const next = inputMode === 'select' ? 'hand' : 'select';
@@ -1302,11 +1299,11 @@ export default function App() {
             mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
             if (next !== 'select') { mouseSelectedIdRef.current = null; mouseDragActiveRef.current = false; invalidateCache(); }
             showToast(next === 'select' ? 'Select mode — click to select, drag to move/resize/rotate' : 'Hand tracking mode restored');
-          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'select' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
+          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'select' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
             <span className="material-symbols-outlined mb-1">arrow_selector_tool</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Select</span>
           </div>
-          <div onClick={() => setActiveSidebarPanel(activeSidebarPanel === 'Brushes' ? null : 'Brushes')} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${activeSidebarPanel === 'Brushes' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
+          <div onClick={() => setActiveSidebarPanel(activeSidebarPanel === 'Brushes' ? null : 'Brushes')} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${activeSidebarPanel === 'Brushes' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
             <span className="material-symbols-outlined mb-1">brush</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Brushes</span>
           </div>
@@ -1327,7 +1324,7 @@ export default function App() {
             }
             mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
             showToast(next === 'mouse' ? 'Mouse drawing enabled — click & drag to draw' : 'Hand tracking mode restored');
-          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'mouse' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
+          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'mouse' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
             <span className="material-symbols-outlined mb-1">draw</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Mouse</span>
           </div>
@@ -1337,15 +1334,15 @@ export default function App() {
             setInputMode(next);
             mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
             showToast(next === 'text' ? 'Text tool active — click canvas to place text' : 'Hand tracking mode restored');
-          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'text' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
+          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'text' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
             <span className="material-symbols-outlined mb-1">text_fields</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Text</span>
           </div>
-          <div onClick={() => setActiveModal('Gestures')} className="text-slate-600 py-4 flex flex-col items-center justify-center hover:bg-white/5 hover:text-white transition-colors cursor-pointer group">
+          <div onClick={() => setActiveModal('Gestures')} className="text-slate-400 py-4 flex flex-col items-center justify-center hover:bg-black/5 hover:text-[#003D6A] transition-colors cursor-pointer group rounded-full">
             <span className="material-symbols-outlined mb-1">gesture</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Gestures</span>
           </div>
-          <div onClick={() => setActiveSidebarPanel(activeSidebarPanel === 'Depth' ? null : 'Depth')} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${activeSidebarPanel === 'Depth' ? 'bg-primary/10 border-l-2 border-primary text-primary' : 'text-slate-600 hover:bg-white/5 hover:text-white'}`}>
+          <div onClick={() => setActiveSidebarPanel(activeSidebarPanel === 'Depth' ? null : 'Depth')} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${activeSidebarPanel === 'Depth' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
             <span className="material-symbols-outlined mb-1">layers</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Depth</span>
           </div>
@@ -1429,7 +1426,7 @@ export default function App() {
               }
             }
 
-          }} className="text-slate-600 py-4 flex flex-col items-center justify-center hover:bg-white/5 hover:text-white transition-colors cursor-pointer group">
+          }} className="text-slate-400 py-4 flex flex-col items-center justify-center hover:bg-black/5 hover:text-[#003D6A] transition-colors cursor-pointer group rounded-full">
             <span className="material-symbols-outlined mb-1">ios_share</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Export</span>
           </div>
@@ -1446,14 +1443,14 @@ export default function App() {
             invalidateCache();
             rebuildStrokeIndex();                      // wipe stale strokeIndexRef entries
             syncLayersState(); // reflect cleared stroke counts in UI
-          }} className="w-full py-2 bg-primary/10 border border-primary/30 text-primary text-[10px] font-bold space-grotesk tracking-widest hover:bg-primary hover:text-on-primary active:bg-primary active:text-on-primary transition-all">
+          }} className="w-full py-2 bg-[#FF3B30]/10 text-[#FF3B30] text-[10px] font-bold space-grotesk tracking-widest hover:bg-[#FF3B30] hover:text-white active:bg-[#FF3B30]/80 rounded-full transition-all">
             CALIBRATE
           </button>
         </div>
       </aside>
 
       {/* Main Canvas Area */}
-      <main className="ml-20 pt-16 h-screen w-[calc(100%-5rem)] relative overflow-hidden canvas-grid">
+      <main className="absolute inset-0 z-0 overflow-hidden canvas-grid rounded-[3rem]">
         <div className="absolute inset-0 z-0 flex items-center justify-center" style={{ perspective: '1200px' }}>
           <canvas
             ref={drawingCanvasRef}
@@ -1886,34 +1883,116 @@ export default function App() {
         })()}
 
         {activeModal === 'Gestures' && (
-          <div className="absolute inset-0 bg-black/60 z-50 flex items-center justify-center backdrop-blur-sm">
-            <div className="glass-panel p-8 max-w-2xl w-full relative border border-primary/20">
-              <button onClick={() => setActiveModal(null)} className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors"><span className="material-symbols-outlined">close</span></button>
-              <h2 className="text-2xl font-space-grotesk text-primary mb-8 tracking-widest uppercase">Gesture Mapping Guide</h2>
-              <div className="grid grid-cols-2 gap-6 text-sm">
-                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
-                  <strong className="text-primary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Right Index Point</strong>
-                  <span className="text-white/60">Draw continuous strokes on canvas</span>
+          <div className="absolute inset-0 bg-black/40 z-50 flex items-center justify-center backdrop-blur-sm">
+            <div className="bg-[#FAFAFA] p-8 max-w-4xl w-full relative border border-white/20 rounded-[3rem] shadow-2xl flex flex-col gap-6">
+              <button onClick={() => setActiveModal(null)} className="absolute top-8 right-8 text-[#003D6A] hover:opacity-70 transition-colors w-12 h-12 rounded-full border border-dashed border-[#003D6A]/30 flex items-center justify-center"><span className="material-symbols-outlined">close</span></button>
+              
+              <div>
+                <h2 className="text-4xl font-bold font-space-grotesk text-[#003D6A] tracking-tight">Gesture Control Guide</h2>
+                <p className="text-sm text-slate-500 mt-2 font-space-grotesk">Aether Synapse Spatial Kit</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-6 h-full mt-4">
+                {/* Right Hand Column */}
+                <div className="bg-[#EAF8FF] rounded-[2rem] p-6 flex flex-col">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 bg-[#003D6A] rounded-full flex items-center justify-center shadow-md">
+                      <span className="material-symbols-outlined text-white text-lg">front_hand</span>
+                    </div>
+                    <h3 className="text-xl font-bold text-[#003D6A]">Right Hand:<br/>Creation</h3>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3 flex-1">
+                    <div className="bg-[#FAFAFA] rounded-full flex flex-col items-center justify-between p-4 shadow-sm">
+                      <div className="flex flex-col items-center text-center">
+                        <div className="w-10 h-10 bg-[#34C1FA] rounded-full flex items-center justify-center mb-3 text-white">
+                          <span className="material-symbols-outlined text-sm">edit</span>
+                        </div>
+                        <strong className="text-[#003D6A] text-sm leading-tight">Index<br/>Point</strong>
+                        <p className="text-[10px] text-slate-500 mt-2">Draw in 3D space with precision mapping.</p>
+                      </div>
+                      <span className="bg-[#EAF8FF] text-[#003D6A] text-[9px] font-bold px-3 py-1 rounded-full uppercase mt-4">Draw</span>
+                    </div>
+
+                    <div className="bg-[#FAFAFA] rounded-full flex flex-col items-center justify-between p-4 shadow-sm">
+                      <div className="flex flex-col items-center text-center">
+                        <div className="w-10 h-10 bg-[#FF6B5B] rounded-full flex items-center justify-center mb-3 text-white">
+                          <span className="material-symbols-outlined text-sm">swipe</span>
+                        </div>
+                        <strong className="text-[#003D6A] text-sm leading-tight">Pinch</strong>
+                        <p className="text-[10px] text-slate-500 mt-2">Select or erase specific line segments.</p>
+                      </div>
+                      <span className="bg-[#FDEBEA] text-[#FF3B30] text-[9px] font-bold px-3 py-1 rounded-full uppercase mt-4">Erase</span>
+                    </div>
+
+                    <div className="bg-[#FAFAFA] rounded-full flex flex-col items-center justify-between p-4 shadow-sm">
+                      <div className="flex flex-col items-center text-center">
+                        <div className="w-10 h-10 bg-slate-300 rounded-full flex items-center justify-center mb-3 text-[#003D6A]">
+                          <span className="material-symbols-outlined text-sm">back_hand</span>
+                        </div>
+                        <strong className="text-[#003D6A] text-sm leading-tight">Fist</strong>
+                        <p className="text-[10px] text-slate-500 mt-2">Hold for 2 seconds to clear canvas.</p>
+                      </div>
+                      <span className="bg-slate-100 text-slate-600 text-[9px] font-bold px-3 py-1 rounded-full uppercase mt-4">Clear</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
-                  <strong className="text-secondary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Right Fist</strong>
-                  <span className="text-white/60">Clear all strokes on the active layer</span>
+
+                {/* Left Hand Column */}
+                <div className="bg-[#FDEBEA] rounded-[2rem] p-6 flex flex-col">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 bg-[#FF3B30] rounded-full flex items-center justify-center shadow-md">
+                      <span className="material-symbols-outlined text-white text-lg">front_hand</span>
+                    </div>
+                    <h3 className="text-xl font-bold text-[#003D6A]">Left Hand:<br/>Spatial</h3>
+                  </div>
+
+                  <div className="flex flex-col gap-3 flex-1">
+                    <div className="bg-[#FAFAFA] rounded-3xl p-4 flex items-center gap-4 shadow-sm relative overflow-hidden">
+                      <div className="w-12 h-12 bg-[#EAF8FF] rounded-2xl flex items-center justify-center text-[#34C1FA] shrink-0">
+                        <span className="material-symbols-outlined">pinch</span>
+                      </div>
+                      <div>
+                        <strong className="text-[#003D6A] block text-sm">Peace Sign</strong>
+                        <p className="text-[11px] text-slate-500 leading-tight mt-1">Move selected layers in XYZ space.</p>
+                      </div>
+                      <span className="absolute right-4 text-[9px] font-bold text-[#003D6A] tracking-widest uppercase rotate-90 origin-right">Move</span>
+                    </div>
+
+                    <div className="bg-[#FAFAFA] rounded-3xl p-4 flex items-center gap-4 shadow-sm relative overflow-hidden">
+                      <div className="w-12 h-12 bg-[#FDEBEA] rounded-2xl flex items-center justify-center text-[#FF3B30] shrink-0">
+                        <span className="material-symbols-outlined">zoom_out_map</span>
+                      </div>
+                      <div>
+                        <strong className="text-[#003D6A] block text-sm">Pinch & Spread</strong>
+                        <p className="text-[11px] text-slate-500 leading-tight mt-1">Uniformly scale objects or canvas.</p>
+                      </div>
+                      <span className="absolute right-4 text-[9px] font-bold text-[#FF3B30] tracking-widest uppercase rotate-90 origin-right">Scale</span>
+                    </div>
+
+                    <div className="bg-[#FAFAFA] rounded-3xl p-4 flex items-center gap-4 shadow-sm relative overflow-hidden">
+                      <div className="w-12 h-12 bg-[#EAF8FF] rounded-2xl flex items-center justify-center text-[#34C1FA] shrink-0">
+                        <span className="material-symbols-outlined">screen_rotation</span>
+                      </div>
+                      <div>
+                        <strong className="text-[#003D6A] block text-sm">Open Palm</strong>
+                        <p className="text-[11px] text-slate-500 leading-tight mt-1">Rotate objects around center axis.</p>
+                      </div>
+                      <span className="absolute right-4 text-[9px] font-bold text-[#34C1FA] tracking-widest uppercase rotate-90 origin-right">Rotate</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
-                  <strong className="text-primary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Right Pinch</strong>
-                  <span className="text-white/60">Select nearest stroke for manipulation</span>
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-between col-span-2 pt-2">
+                <div className="flex items-center gap-2 text-slate-500 text-sm">
+                  <span className="material-symbols-outlined text-[#FF3B30]">info</span>
+                  Pro Tip: Combine Left Hand Rotate with Right Hand Draw for helical structures.
                 </div>
-                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
-                  <strong className="text-primary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Left Peace Sign</strong>
-                  <span className="text-white/60">Grab and move active stroke globally</span>
-                </div>
-                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-secondary/30 transition-colors">
-                  <strong className="text-secondary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Left Pinch</strong>
-                  <span className="text-white/60">Scale object size using thumb/index spread</span>
-                </div>
-                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-primary/30 transition-colors">
-                  <strong className="text-primary block mb-2 font-space-grotesk uppercase text-xs tracking-wider">Left Open Palm</strong>
-                  <span className="text-white/60">Snap-rotate active stroke based on wrist angle</span>
+                <div className="flex gap-4">
+                  <button className="px-6 py-3 bg-slate-100 text-[#003D6A] rounded-full font-bold text-sm hover:bg-slate-200 transition-colors">Watch Video</button>
+                  <button onClick={() => setActiveModal(null)} className="px-8 py-3 bg-[#34C1FA] text-white rounded-full font-bold text-sm shadow-[0_0_20px_rgba(52,193,250,0.4)] border border-dashed border-white/50 hover:bg-[#20AEEB] transition-colors">I'm Ready</button>
                 </div>
               </div>
             </div>
@@ -2086,6 +2165,7 @@ export default function App() {
         )}
 
       </main>
+      </div>
     </div>
   );
 }
