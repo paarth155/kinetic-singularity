@@ -137,6 +137,7 @@ export default function App() {
   const prevTransformKeyRef = useRef<string>(''); // detect transform changes
   const prevHoveredIdRef = useRef<string | null>(null); // track hover changes for cache invalidation
   const pendingBakesRef = useRef<Set<string>>(new Set());
+  const liveManipulationIdsRef = useRef<Set<string>>(new Set());
 
   // ─── Stroke index & cached visible strokes (rebuilt only when dirty) ─────
   const strokeIndexRef = useRef<Map<string, Stroke>>(new Map());
@@ -776,7 +777,11 @@ export default function App() {
           if (!state.isGrabbing) {
             state.isGrabbing = true;
             state.initialPointer = { x: ptX, y: ptY };
-            targetStrokes.forEach(s => state.initialTranslates.set(s.id, { ...s.translate }));
+            targetStrokes.forEach(s => {
+              state.initialTranslates.set(s.id, { ...s.translate });
+              liveManipulationIdsRef.current.add(s.id);
+            });
+            invalidateRenderCache();
           } else {
             const dx = ptX - state.initialPointer.x;
             const dy = ptY - state.initialPointer.y;
@@ -787,10 +792,13 @@ export default function App() {
                 s.translate.y = init.y + dy;
               }
             });
-            invalidateRenderCache();
           }
         } else {
-          if (state.isGrabbing) { state.initialTranslates.clear(); }
+          if (state.isGrabbing) {
+            state.initialTranslates.clear();
+            liveManipulationIdsRef.current.clear();
+            invalidateRenderCache();
+          }
           state.isGrabbing = false;
         }
 
@@ -800,7 +808,11 @@ export default function App() {
           if (!state.isScaling) {
             state.isScaling = true;
             state.initialPointer = { x: currentX, y: 0 };
-            targetStrokes.forEach(s => state.initialScales.set(s.id, s.scale));
+            targetStrokes.forEach(s => {
+              state.initialScales.set(s.id, s.scale);
+              liveManipulationIdsRef.current.add(s.id);
+            });
+            invalidateRenderCache();
           } else {
             const dragDelta = state.initialPointer.x - currentX;
             const scaleFactor = 1 + (dragDelta / 200);
@@ -808,10 +820,13 @@ export default function App() {
               const init = state.initialScales.get(s.id) || 1;
               s.scale = Math.max(0.05, Math.min(12, init * scaleFactor));
             });
-            invalidateRenderCache();
           }
         } else {
-          if (state.isScaling) { state.initialScales.clear(); }
+          if (state.isScaling) {
+            state.initialScales.clear();
+            liveManipulationIdsRef.current.clear();
+            invalidateRenderCache();
+          }
           state.isScaling = false;
         }
 
@@ -821,15 +836,34 @@ export default function App() {
           const mirrorWristX = 1 - wrist.x;
           const angle = Math.atan2(indexTip.y - wrist.y, mirrorIndexX - mirrorWristX) * (180 / Math.PI);
           const snappedAngle = Math.round(angle / 45) * 45;
+          
+          if (!state.isRotating) {
+            state.isRotating = true;
+            targetStrokes.forEach(s => liveManipulationIdsRef.current.add(s.id));
+            invalidateRenderCache();
+          }
           targetStrokes.forEach(s => { s.rotation = snappedAngle; });
-          invalidateRenderCache();
+        } else {
+          if (state.isRotating) {
+            liveManipulationIdsRef.current.clear();
+            invalidateRenderCache();
+          }
+          state.isRotating = false;
         }
       } else if (leftHand) {
+        if (leftHandState.current.isGrabbing || leftHandState.current.isScaling || leftHandState.current.isRotating) {
+           liveManipulationIdsRef.current.clear();
+           invalidateRenderCache();
+        }
         leftHandState.current.isGrabbing = false;
         leftHandState.current.isScaling = false;
         leftHandState.current.isRotating = false;
       } else {
         // No left hand visible — fully reset manipulation state to prevent stale grabs
+        if (leftHandState.current.isGrabbing || leftHandState.current.isScaling || leftHandState.current.isRotating) {
+           liveManipulationIdsRef.current.clear();
+           invalidateRenderCache();
+        }
         leftHandState.current.isGrabbing = false;
         leftHandState.current.isScaling = false;
         leftHandState.current.isRotating = false;
@@ -908,9 +942,9 @@ export default function App() {
 
           layersRef.current.filter(l => l.visible).forEach(layer => {
             layer.strokes.forEach(stroke => {
-              // Skip actively-being-drawn and animating strokes
+              // Skip actively-being-drawn, animating strokes, and strokes being manipulated live
               const isAnimating = now - stroke.birthTime < 1500;
-              if (stroke.id === activeDrawingId || isAnimating) {
+              if (stroke.id === activeDrawingId || isAnimating || liveManipulationIdsRef.current.has(stroke.id)) {
                 if (isAnimating) pendingBakesRef.current.add(stroke.id);
                 return;
               }
@@ -964,6 +998,18 @@ export default function App() {
             }
           } else {
             pendingBakesRef.current.delete(strokeId);
+          }
+        }
+      }
+
+      if (liveManipulationIdsRef.current.size > 0) {
+        for (const strokeId of liveManipulationIdsRef.current) {
+          if (strokeId === activeDrawingId) continue;
+          const stroke = strokeIndexRef.current.get(strokeId);
+          if (stroke) {
+            const isSelected = selectAllModeRef.current || stroke.id === currentActiveId;
+            const isHovered = !selectAllModeRef.current && stroke.id === hoveredStrokeIdRef.current && !isSelected;
+            renderStroke(ctx!, stroke, isSelected, isHovered);
           }
         }
       }
