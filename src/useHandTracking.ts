@@ -395,18 +395,17 @@ export function useHandTracking(
             const gestureByHand:  Record<string, Gesture>     = {};
 
             // ─── Logical Hand Assignment ───
-            // Use MediaPipe's handednesses labels, INVERTED for mirror/selfie view.
-            let currentHandsInfo = results.landmarks.map((rawLm, idx) => {
-              const mpLabel = results.handednesses?.[idx]?.[0]?.categoryName;
-              const labelHint: 'Left' | 'Right' = mpLabel === 'Left' ? 'Right' : 'Left';
+            // We ignore MediaPipe's 'handednesses' label as it is highly unreliable during pointing gestures 
+            // and can permanently lock the wrong identity due to spatial tracking. Instead, we use a robust
+            // combination of spatial tracking (to prevent flickering) and X-coordinate heuristics for new hands.
+            
+            let currentHandsInfo = results.landmarks.map(rawLm => {
               const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
               const cy = rawLm.reduce((sum, p) => sum + p.y, 0) / rawLm.length;
-              return { rawLm, cx, cy, labelHint, assigned: null as 'Left' | 'Right' | null };
+              return { rawLm, cx, cy, assigned: null as 'Left' | 'Right' | null };
             });
 
             // 1. Spatial tracking: match with previous frames to prevent identity flickering
-            // MediaPipe struggles with handedness during pointing gestures. If a hand was "Right" 
-            // recently, it stays "Right" as long as it's spatially close.
             const assignedStatus = { Left: false, Right: false };
             for (const handName of ['Left', 'Right'] as const) {
               if (smoothed[handName]) {
@@ -433,21 +432,25 @@ export function useHandTracking(
               }
             }
 
-            // 2. Assign any new incoming hands
-            currentHandsInfo.forEach((info) => {
-              if (!info.assigned) {
-                if (!assignedStatus[info.labelHint]) {
-                  info.assigned = info.labelHint;
-                  assignedStatus[info.labelHint] = true;
-                } else {
-                  const other = info.labelHint === 'Left' ? 'Right' : 'Left';
-                  if (!assignedStatus[other]) {
-                    info.assigned = other;
-                    assignedStatus[other] = true;
-                  }
-                }
-              }
-            });
+            // 2. Assign any new incoming hands using the X-heuristic
+            // In raw webcam coords (unmirrored), the user's Right hand is physically on the left side of the image (lower X).
+            const unassigned = currentHandsInfo.filter(info => !info.assigned);
+            
+            if (unassigned.length > 0) {
+               // Sort strictly ascending by X (Lowest X = Right hand)
+               unassigned.sort((a, b) => a.cx - b.cx);
+
+               for (const info of unassigned) {
+                 if (!assignedStatus.Right) {
+                   info.assigned = 'Right';
+                   assignedStatus.Right = true;
+                 } else if (!assignedStatus.Left) {
+                   info.assigned = 'Left';
+                   assignedStatus.Left = true;
+                 }
+                 // Any 3rd ghost hand stays unassigned and will be filtered out below
+               }
+            }
 
             // Filter out any unassignable phantoms
             currentHandsInfo = currentHandsInfo.filter(info => info.assigned !== null).slice(0, 2);
