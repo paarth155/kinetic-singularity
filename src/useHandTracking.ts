@@ -396,30 +396,64 @@ export function useHandTracking(
 
             // ─── Logical Hand Assignment ───
             // Use MediaPipe's handednesses labels, INVERTED for mirror/selfie view.
-            // MediaPipe reports from the camera's perspective: camera "Left" = user's Right hand.
             let currentHandsInfo = results.landmarks.map((rawLm, idx) => {
               const mpLabel = results.handednesses?.[idx]?.[0]?.categoryName;
-              const userHand: 'Left' | 'Right' = mpLabel === 'Left' ? 'Right' : 'Left';
+              const labelHint: 'Left' | 'Right' = mpLabel === 'Left' ? 'Right' : 'Left';
               const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
-              return { rawLm, cx, assigned: userHand };
+              const cy = rawLm.reduce((sum, p) => sum + p.y, 0) / rawLm.length;
+              return { rawLm, cx, cy, labelHint, assigned: null as 'Left' | 'Right' | null };
             });
 
-            // Cap to 2 hands max (discard phantom detections)
-            if (currentHandsInfo.length > 2) {
-              currentHandsInfo = currentHandsInfo.slice(0, 2);
+            // 1. Spatial tracking: match with previous frames to prevent identity flickering
+            // MediaPipe struggles with handedness during pointing gestures. If a hand was "Right" 
+            // recently, it stays "Right" as long as it's spatially close.
+            const assignedStatus = { Left: false, Right: false };
+            for (const handName of ['Left', 'Right'] as const) {
+              if (smoothed[handName]) {
+                const prevCx = smoothed[handName].reduce((sum, p) => sum + p.x, 0) / smoothed[handName].length;
+                const prevCy = smoothed[handName].reduce((sum, p) => sum + p.y, 0) / smoothed[handName].length;
+                
+                let closestIdx = -1;
+                let minDist = 0.4; // 40% of screen tolerance
+                
+                currentHandsInfo.forEach((info, idx) => {
+                  if (!info.assigned) {
+                    const dist = Math.hypot(info.cx - prevCx, info.cy - prevCy);
+                    if (dist < minDist) {
+                      minDist = dist;
+                      closestIdx = idx;
+                    }
+                  }
+                });
+                
+                if (closestIdx !== -1) {
+                  currentHandsInfo[closestIdx].assigned = handName;
+                  assignedStatus[handName] = true;
+                }
+              }
             }
 
-            // If both hands got the same label (MediaPipe error), fall back to X-position tiebreaker.
-            // In raw webcam coords, user's Right hand has lower X.
-            if (currentHandsInfo.length === 2 &&
-                currentHandsInfo[0].assigned === currentHandsInfo[1].assigned) {
-              const rightIdx = currentHandsInfo[0].cx < currentHandsInfo[1].cx ? 0 : 1;
-              currentHandsInfo[rightIdx].assigned = 'Right';
-              currentHandsInfo[1 - rightIdx].assigned = 'Left';
-            }
+            // 2. Assign any new incoming hands
+            currentHandsInfo.forEach((info) => {
+              if (!info.assigned) {
+                if (!assignedStatus[info.labelHint]) {
+                  info.assigned = info.labelHint;
+                  assignedStatus[info.labelHint] = true;
+                } else {
+                  const other = info.labelHint === 'Left' ? 'Right' : 'Left';
+                  if (!assignedStatus[other]) {
+                    info.assigned = other;
+                    assignedStatus[other] = true;
+                  }
+                }
+              }
+            });
+
+            // Filter out any unassignable phantoms
+            currentHandsInfo = currentHandsInfo.filter(info => info.assigned !== null).slice(0, 2);
 
             const newHands: HandState[] = currentHandsInfo.map(({ rawLm, assigned }) => {
-              const hand = assigned;
+              const hand = assigned as 'Left' | 'Right';
               lostHandFrames[hand] = 0;
               activeHands.add(hand);
 
