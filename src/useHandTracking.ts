@@ -422,16 +422,18 @@ export function useHandTracking(
             const smoothedByHand: Record<string, Landmark[]>  = {};
             const gestureByHand:  Record<string, Gesture>     = {};
 
-            // ─── Logical Hand Assignment ───
-            // MediaPipe's 'handednesses' classifier is inherently broken for selfie cameras when pointing 
-            // because the back of a Right hand visually looks identical to a first-person Left hand. 
-            // We ignore it entirely. Instead we use a bulletproof combination of spatial tracking 
-            // (to anchor identities and reject ghosts) and X-coordinate sorting for fresh detections.
-
-            let currentHandsInfo = results.landmarks.map(rawLm => {
+            // ─── Native Target Classification ───
+            // For front-facing cameras, the raw byte array isn't mirrored at the driver level, so a physical Right Hand 
+            // visually resembles a Left hand to the neural network. We invert the classifier's label to get the true physical hand.
+            let currentHandsInfo = results.landmarks.map((rawLm, idx) => {
               const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
               const cy = rawLm.reduce((sum, p) => sum + p.y, 0) / rawLm.length;
-              return { rawLm, cx, cy, assigned: null as 'Left' | 'Right' | null };
+              
+              // MediaPipe raw classifier output: inverted because of the unmirrored camera capture
+              const predictedHand = results.handednesses?.[idx]?.[0]?.categoryName;
+              const physicalHandTarget = predictedHand === 'Left' ? 'Right' : predictedHand === 'Right' ? 'Left' : null;
+
+              return { rawLm, cx, cy, assigned: null as 'Left' | 'Right' | null, physicalHandTarget };
             });
 
             // Step 1: Spatial tracking lock for established hands
@@ -465,38 +467,20 @@ export function useHandTracking(
             const unassigned = currentHandsInfo.filter(info => !info.assigned);
             
             if (unassigned.length > 0) {
-               // Sort strictly ascending by X. In unmirrored camera coords, physical Right is on the lower-X side.
-               unassigned.sort((a, b) => a.cx - b.cx);
-
-               if (unassigned.length === 1) {
-                 // The "Drawing Hand First" rule: if one hand enters, it takes the Drawing slot (Right) if available.
-                 // Only default to Right if we don't have spatial history identifying the Left hand recently.
-                 const info = unassigned[0];
-                 if (!assignedStatus.Right && !smoothed['Left']) {
+               // Assign fresh hands cleanly based on MediaPipe's native prediction logic, 
+               // trusting the neural network over blind slot-filling rules.
+               unassigned.forEach(info => {
+                 if (info.physicalHandTarget && !assignedStatus[info.physicalHandTarget as 'Left' | 'Right']) {
+                   info.assigned = info.physicalHandTarget as 'Left' | 'Right';
+                   assignedStatus[info.physicalHandTarget as 'Left' | 'Right'] = true;
+                 } else if (!assignedStatus.Right) {
                    info.assigned = 'Right';
+                   assignedStatus.Right = true;
                  } else if (!assignedStatus.Left) {
                    info.assigned = 'Left';
-                 } else if (!assignedStatus.Right) {
-                   info.assigned = 'Right';
-                 }
-               } else if (unassigned.length >= 2) {
-                 // Two hands appeared simultaneously. Lowest X = Right, next = Left.
-                 if (!assignedStatus.Right) {
-                   unassigned[0].assigned = 'Right';
-                   assignedStatus.Right = true;
-                 } else {
-                   unassigned[0].assigned = 'Left';
                    assignedStatus.Left = true;
                  }
-
-                 if (!assignedStatus.Left) {
-                   unassigned[1].assigned = 'Left';
-                   assignedStatus.Left = true;
-                 } else if (!assignedStatus.Right) {
-                   unassigned[1].assigned = 'Right';
-                   assignedStatus.Right = true;
-                 }
-               }
+               });
             }
 
             // Filter out any unassignable 3rd ghost hands
