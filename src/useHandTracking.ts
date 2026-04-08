@@ -331,12 +331,12 @@ export function useHandTracking(
     // ── HUD Drawing ──────────────────────────────────────────────────────────
 
     const GESTURE_COLORS: Record<Gesture, string> = {
-      IndexPoint: '#00ff88',
-      Pinch:      '#ff51fa',
-      Fist:       '#ff4444',
-      Peace:      '#8ff5ff',
-      OpenPalm:   '#ffd000',
-      None:       '#ffffff44',
+      IndexPoint: '#00a86b', // Darker green
+      Pinch:      '#ae3026', // Darker red/coral
+      Fist:       '#ba1a1a', // Error red
+      Peace:      '#006688', // Deep Navy/Teal instead of cyan
+      OpenPalm:   '#cc9900', // Darker yellow
+      None:       'rgba(0, 61, 106, 0.1)', // Very faint navy instead of faint white
     };
 
     function drawHUD(smoothedByHand: Record<string, Landmark[]>, gestureByHand: Record<string, Gesture>) {
@@ -363,14 +363,14 @@ export function useHandTracking(
         const gesture     = gestureByHand[hand] ?? 'None';
         const accentColor = GESTURE_COLORS[gesture];
 
-        // Skeleton connectors (subtle cyan)
+        // Skeleton connectors (subtle navy)
         du.drawConnectors(lm as any, HandLandmarker.HAND_CONNECTIONS, {
-          color: 'rgba(143,245,255,0.35)',
+          color: 'rgba(0, 61, 106, 0.35)',
           lineWidth: 1.5,
         });
 
-        // All joints (dim)
-        du.drawLandmarks(lm as any, { color: 'rgba(255,255,255,0.25)', lineWidth: 1, radius: 1.5 });
+        // All joints (dim navy)
+        du.drawLandmarks(lm as any, { color: 'rgba(0, 61, 106, 0.25)', lineWidth: 1, radius: 1.5 });
 
         // Fingertips — highlight with gesture accent colour so user can see what's active
         // Set shadow state once per hand — not per tip — to avoid 10 GPU state changes per frame per hand

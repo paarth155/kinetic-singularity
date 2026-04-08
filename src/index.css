@@ -2,9 +2,9 @@
 
 @theme {
   /* ── Sky & Coral Theme Tokens ────────────────────────── */
-  --color-primary:           #34C1FA;
+  --color-primary:           #003D6A;
   --color-on-primary:        #FFFFFF;
-  --color-primary-container: #8FE3FF;
+  --color-primary-container: #34C1FA;
   
   --color-secondary:         #FF6B5B;
   --color-on-secondary:      #FFFFFF;
@@ -51,13 +51,13 @@
 /* Sky/Coral theme default */
 html,
 html[data-theme="holo-blue"] {
-  --color-primary:           #34C1FA;
+  --color-primary:           #003D6A;
   --color-on-primary:        #FFFFFF;
-  --color-primary-container: #8FE3FF;
+  --color-primary-container: #34C1FA;
   --color-secondary:         #FF6B5B;
-  --color-surface-tint:      #34C1FA;
+  --color-surface-tint:      #003D6A;
   --theme-grid-color:        rgba(0, 61, 106, 0.05);
-  --theme-accent-hex:        52 193 250;
+  --theme-accent-hex:        0 61 106;
 }
 
 /* Coral pop theme */
