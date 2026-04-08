@@ -269,7 +269,7 @@ export default function App() {
   const [textInputPos, setTextInputPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const textInputRef = useRef<HTMLInputElement>(null);
 
-  const brushColorRef = useRef<string>('#8ff5ff');
+  const brushColorRef = useRef<string>('#003D6A');
   // brushColorState mirrors brushColorRef for reactive JSX (palette swatch ring, etc.).
   // Update BOTH together wherever brushColorRef.current is written.
   const [brushColorState, setBrushColorState] = useState<string>(brushColorRef.current);
@@ -292,17 +292,17 @@ export default function App() {
 
   // ─── Theme ───────────────────────────────────────────────────────────────────
   const [activeTheme, setActiveTheme] = useState<ThemeId>('holo-blue');
-  const themeSelColorRef = useRef<string>('#8ff5ff');
+  const themeSelColorRef = useRef<string>('#003D6A');
   const applyTheme = useCallback((theme: ThemeId) => {
     document.documentElement.setAttribute('data-theme', theme);
     setActiveTheme(theme);
     // Swap brush cursor default color to match theme accent
     if (theme === 'crimson') {
-      brushColorRef.current = brushColorRef.current === '#8ff5ff' ? '#ff4f6d' : brushColorRef.current;
+      brushColorRef.current = brushColorRef.current === '#003D6A' ? '#ff4f6d' : brushColorRef.current;
       themeSelColorRef.current = '#ff4f6d';
     } else {
-      brushColorRef.current = brushColorRef.current === '#ff4f6d' ? '#8ff5ff' : brushColorRef.current;
-      themeSelColorRef.current = '#8ff5ff';
+      brushColorRef.current = brushColorRef.current === '#ff4f6d' ? '#003D6A' : brushColorRef.current;
+      themeSelColorRef.current = '#003D6A';
     }
     setBrushColorState(brushColorRef.current); // keep reactive state in sync
     invalidateCache(); // Rebuild cache with new theme selection colors
@@ -2103,11 +2103,11 @@ export default function App() {
         )}
 
         {activeTab === 'Assets' && (
-          <div className="absolute left-28 right-12 top-28 bottom-8 glass-panel p-8 z-30 border border-primary/10 fade-in animate-in overflow-y-auto custom-scrollbar flex flex-col">
-            <div className="flex justify-between items-center border-b border-primary/20 pb-4 mb-6">
+          <div className="absolute left-28 right-12 top-28 bottom-8 bg-white/90 backdrop-blur-xl border border-[#003D6A]/10 shadow-[0_8px_32px_rgba(0,61,106,0.08)] p-8 z-30 fade-in animate-in overflow-y-auto custom-scrollbar flex flex-col rounded-3xl">
+            <div className="flex justify-between items-center border-b border-[#003D6A]/15 pb-4 mb-6">
               <div>
-                <h3 className="text-xs uppercase font-space-grotesk text-white/70 tracking-widest">Asset Library</h3>
-                <p className="text-[10px] text-white/30 mt-1">Click any shape node to embed it into the active layer</p>
+                <h3 className="text-xs uppercase font-space-grotesk text-[#003D6A] tracking-widest font-semibold">Asset Library</h3>
+                <p className="text-[10px] text-[#4B7A9F] mt-1">Click any shape node to embed it into the active layer</p>
               </div>
             </div>
             <div className="grid grid-cols-5 gap-4 flex-1">
@@ -2125,7 +2125,7 @@ export default function App() {
               ].map(({ icon, label }) => (
                 <div
                   key={label}
-                  className="aspect-square bg-white/5 border border-white/10 rounded-full flex flex-col items-center justify-center hover:border-primary/50 hover:bg-primary/5 hover:-translate-y-1 transition-all cursor-pointer group"
+                  className="aspect-square bg-[#F0F5FA] border border-[#C1D5E4] rounded-2xl flex flex-col items-center justify-center hover:border-[#003D6A]/50 hover:bg-[#EAF8FF] hover:-translate-y-1 transition-all cursor-pointer group shadow-sm"
                   onClick={() => {
                     const activeLayer = layersRef.current.find((l: Layer) => l.id === activeLayerIdRef.current)
                       ?? layersRef.current[layersRef.current.length - 1];
@@ -2153,8 +2153,8 @@ export default function App() {
                     showToast(`${label} embedded into active layer`);
                   }}
                 >
-                  <span className="material-symbols-outlined text-5xl text-white/20 mb-3 group-hover:text-primary transition-colors">{icon}</span>
-                  <span className="text-[10px] text-white/40 tracking-wider font-mono group-hover:text-white/70 transition-colors">{label}</span>
+                  <span className="material-symbols-outlined text-5xl text-[#4B7A9F] mb-3 group-hover:text-[#003D6A] transition-colors">{icon}</span>
+                  <span className="text-[10px] text-[#4B7A9F] tracking-wider font-mono group-hover:text-[#003D6A] font-semibold transition-colors">{label}</span>
                 </div>
               ))}
             </div>

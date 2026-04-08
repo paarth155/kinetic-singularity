@@ -105,8 +105,8 @@ export function generateShapePoints(shapeType: string, cx: number, cy: number, s
     case 'pentagon':       return generatePolygonPoints(cx, cy, size, 5);
     case 'hexagon':        return generatePolygonPoints(cx, cy, size, 6);
     case 'change_history': return generatePolygonPoints(cx, cy, size, 3);
-    case 'square':         return generateRectPoints(cx, cy, size * 2, size * 2);
-    case 'crop_square':    return generateRectPoints(cx, cy, size * 2.2, size * 1.4);
+    case 'square':         return generateRectPoints(cx, cy, size * 2, size * 2);  // SQR_105 — actual square
+    case 'crop_square':    return generateRectPoints(cx, cy, size * 2.2, size * 1.4); // FRAME_108 — wider rect
     case 'star':           return generateStarPoints(cx, cy, size, size * 0.45);
     case 'diamond':        return generateDiamondPoints(cx, cy, size);
     case 'scatter_plot':   return generateScatterPoints(cx, cy, size);
