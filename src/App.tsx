@@ -1,5 +1,6 @@
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState, useCallback, lazy, Suspense } from 'react';
 import { useHandTracking, type HandTrackingConfig } from './useHandTracking';
+const Tutorial3D = lazy(() => import('./Tutorial3D'));
 
 import {
   type Vector2,
@@ -341,6 +342,7 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<string>('Draw');
   const [activeModal, setActiveModal] = useState<string | null>(null);
+  const [showTutorial, setShowTutorial] = useState(() => !localStorage.getItem('ks-tutorial-done'));
   const [activeSidebarPanel, setActiveSidebarPanel] = useState<string | null>(null);
 
   // ─── Theme ───────────────────────────────────────────────────────────────────
@@ -1379,6 +1381,9 @@ export default function App() {
           <button onClick={() => { navigator.clipboard.writeText(window.location.href); showToast('Project link copied to clipboard!'); }} className="text-slate-400 hover:text-[#003D6A] transition-all">
             <span className="material-symbols-outlined">share</span>
           </button>
+          <button onClick={() => setShowTutorial(true)} className="text-slate-400 hover:text-[#003D6A] transition-all" title="Tutorial">
+            <span className="material-symbols-outlined">school</span>
+          </button>
           <div className="w-8 h-8 bg-surface-container-highest flex items-center justify-center">
             <img alt="User profile" className="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBqjJFKVaIMYLouxbZp3BQALG3vfhajeyj8c85awuG_DnoOD9jyO8vSFF8FIu6x83AscnIOURaGEnlj22bGVcXMMXAD0WSrbsiNUHlAePQMp4epReXungnGpDp4SgkPb4za6kjcxA16TdraC92V0QfcjsgR0euz53Cdv7WV3FPuQOFk_IAEx9aF99mx_rybzRqqpFmtgIKgB35pF0Q7c1V-F0mBqlm-I1dTC4F8KaGNUtjtRy-fMtYnSqwmXXkfRDuWH9Kc7cC4tPJy" />
           </div>
@@ -2289,6 +2294,13 @@ export default function App() {
         )}
 
       </main>
+
+      {/* 3D Interactive Tutorial */}
+      {showTutorial && (
+        <Suspense fallback={null}>
+          <Tutorial3D onClose={() => { setShowTutorial(false); localStorage.setItem('ks-tutorial-done', '1'); }} />
+        </Suspense>
+      )}
     </div>
   );
 }
