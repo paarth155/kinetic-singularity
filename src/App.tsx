@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useCallback, lazy, Suspense } from 'react';
 import { useHandTracking, type HandTrackingConfig } from './useHandTracking';
+import LoginPage, { type AuthUser } from './LoginPage';
 const Tutorial3D = lazy(() => import('./Tutorial3D'));
 
 import {
@@ -165,6 +166,28 @@ function DepthPanel({ brushThicknessRef }: { brushThicknessRef: React.MutableRef
 }
 
 export default function App() {
+  // ─── Auth state ─────────────────────────────────────────────────────────────
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => {
+    try { const s = localStorage.getItem('ks-session'); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
+  const [showLoginPage, setShowLoginPage] = useState(!localStorage.getItem('ks-session'));
+
+  const handleLogin = useCallback((user: AuthUser, isNewUser: boolean) => {
+    setAuthUser(user);
+    setShowLoginPage(false);
+    if (isNewUser) {
+      // Clear old tutorial flag so new user always sees it
+      localStorage.removeItem('ks-tutorial-done');
+      setShowTutorial(true);
+    }
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem('ks-session');
+    setAuthUser(null);
+    setShowLoginPage(true);
+  }, []);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const hudCanvasRef = useRef<HTMLCanvasElement>(null);
   const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -342,7 +365,7 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<string>('Draw');
   const [activeModal, setActiveModal] = useState<string | null>(null);
-  const [showTutorial, setShowTutorial] = useState(() => !localStorage.getItem('ks-tutorial-done'));
+  const [showTutorial, setShowTutorial] = useState(false);
   const [activeSidebarPanel, setActiveSidebarPanel] = useState<string | null>(null);
 
   // ─── Theme ───────────────────────────────────────────────────────────────────
@@ -1354,6 +1377,11 @@ export default function App() {
     return () => cancelAnimationFrame(animId);
   }, []);
 
+  // ─── Auth gate ──────────────────────────────────────────────────────────────
+  if (showLoginPage) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
+
   return (
     <div className="bg-[#FAFAFA] text-on-surface h-screen w-screen overflow-hidden relative flex flex-col">
       {/* TopAppBar */}
@@ -1384,8 +1412,25 @@ export default function App() {
           <button onClick={() => setShowTutorial(true)} className="text-slate-400 hover:text-[#003D6A] transition-all" title="Tutorial">
             <span className="material-symbols-outlined">school</span>
           </button>
-          <div className="w-8 h-8 bg-surface-container-highest flex items-center justify-center">
-            <img alt="User profile" className="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBqjJFKVaIMYLouxbZp3BQALG3vfhajeyj8c85awuG_DnoOD9jyO8vSFF8FIu6x83AscnIOURaGEnlj22bGVcXMMXAD0WSrbsiNUHlAePQMp4epReXungnGpDp4SgkPb4za6kjcxA16TdraC92V0QfcjsgR0euz53Cdv7WV3FPuQOFk_IAEx9aF99mx_rybzRqqpFmtgIKgB35pF0Q7c1V-F0mBqlm-I1dTC4F8KaGNUtjtRy-fMtYnSqwmXXkfRDuWH9Kc7cC4tPJy" />
+          <div className="relative group">
+            <button className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#002746] to-[#003D6A] flex items-center justify-center text-white text-xs font-bold font-space-grotesk cursor-pointer hover:shadow-[0_2px_12px_rgba(0,39,70,0.3)] transition-all" title={authUser?.displayName || 'User'}>
+              {(authUser?.displayName || 'U').charAt(0).toUpperCase()}
+            </button>
+            {/* Dropdown */}
+            <div className="absolute right-0 top-12 w-52 bg-white/95 backdrop-blur-xl border border-[#C2C7D0]/20 rounded-2xl shadow-[0_8px_32px_rgba(0,39,70,0.12)] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 p-2">
+              <div className="px-3 py-2 border-b border-black/5 mb-1">
+                <p className="text-sm font-semibold text-[#002746] font-space-grotesk truncate">{authUser?.displayName}</p>
+                <p className="text-[10px] text-[#727780] font-space-grotesk">@{authUser?.username}</p>
+              </div>
+              <button onClick={() => setShowTutorial(true)} className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-[#42474F] hover:bg-[#F3F3F3] rounded-xl transition-colors font-space-grotesk">
+                <span className="material-symbols-outlined text-base">school</span>
+                Replay Tutorial
+              </button>
+              <button onClick={handleLogout} className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-[#ba1a1a] hover:bg-[#ffdad6]/50 rounded-xl transition-colors font-space-grotesk">
+                <span className="material-symbols-outlined text-base">logout</span>
+                Sign Out
+              </button>
+            </div>
           </div>
         </div>
       </header>
