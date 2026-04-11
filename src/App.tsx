@@ -42,55 +42,92 @@ function SettingsModal({
   const [draftTheme, setDraftTheme] = useState<ThemeId>(activeTheme);
   const [draftSmoothing, setDraftSmoothing] = useState(trackingConfig.smoothing);
   return (
-    <div className="absolute inset-0 bg-black/60 z-50 flex items-center justify-center backdrop-blur-sm">
-      <div className="glass-panel p-8 max-w-md w-full relative border border-primary/20 shadow-[0_0_80px_rgba(143,245,255,0.1)]">
-        <button onClick={closeModal} className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors"><span className="material-symbols-outlined">close</span></button>
-        <h2 className="text-xl font-space-grotesk text-primary mb-6 tracking-widest uppercase">System Settings</h2>
-        <div className="space-y-4 text-sm text-white/70">
-          <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl border border-white/5">
-            <div>
-              <label className="font-space-grotesk tracking-wide text-xs uppercase block">Tracking Engine</label>
-              <span className="text-[10px] text-white/30">Hand detection performance mode</span>
+    <div className="absolute inset-0 bg-black/30 z-50 flex items-center justify-center backdrop-blur-md" onClick={closeModal}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white/80 backdrop-blur-xl p-10 max-w-lg w-full relative rounded-3xl shadow-[0_8px_48px_rgba(0,39,70,0.10)]"
+      >
+        {/* Close button */}
+        <button onClick={closeModal} className="absolute top-6 right-6 w-10 h-10 rounded-full bg-[#F3F3F3] hover:bg-[#E8E8E8] flex items-center justify-center text-[#42474F] hover:text-[#002746] transition-all">
+          <span className="material-symbols-outlined text-xl">close</span>
+        </button>
+
+        {/* Header */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold font-space-grotesk text-[#002746] tracking-tight">System Settings</h2>
+          <p className="text-sm text-[#42474F] mt-1 font-space-grotesk">Configure engine, smoothing & theme</p>
+        </div>
+
+        {/* Settings rows — tonal layering, no explicit borders */}
+        <div className="space-y-3">
+          {/* Tracking Engine */}
+          <div className="bg-[#F3F3F3] rounded-2xl p-5 flex items-center justify-between gap-4 hover:bg-[#EEF3F8] transition-colors">
+            <div className="flex items-center gap-4 flex-1 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-[#D4E4FC] flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[#003D6A] text-lg">precision_manufacturing</span>
+              </div>
+              <div className="min-w-0">
+                <label className="font-space-grotesk font-semibold text-sm text-[#002746] block">Tracking Engine</label>
+                <span className="text-xs text-[#42474F]">Hand detection performance mode</span>
+              </div>
             </div>
             <select
               value={draftQuality}
               onChange={(e) => setDraftQuality(e.target.value as HandTrackingConfig['quality'])}
-              className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded-2xl px-2 py-1 text-xs"
+              className="bg-white text-[#002746] outline-none border border-[#C2C7D0]/40 focus:border-[#003D6A] rounded-xl px-3 py-2 text-sm font-space-grotesk cursor-pointer transition-colors"
             >
               <option value="high">High Perf</option>
               <option value="balanced">Balanced</option>
               <option value="economy">Economy</option>
             </select>
           </div>
-          <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl border border-white/5">
-            <div>
-              <label className="font-space-grotesk tracking-wide text-xs uppercase block">Hand Smoothing</label>
-              <span className="text-[10px] text-white/30">EMA filter strength (higher = smoother)</span>
+
+          {/* Hand Smoothing */}
+          <div className="bg-[#F3F3F3] rounded-2xl p-5 hover:bg-[#EEF3F8] transition-colors">
+            <div className="flex items-center justify-between gap-4 mb-3">
+              <div className="flex items-center gap-4 flex-1 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-[#D4E4FC] flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-[#003D6A] text-lg">tune</span>
+                </div>
+                <div className="min-w-0">
+                  <label className="font-space-grotesk font-semibold text-sm text-[#002746] block">Hand Smoothing</label>
+                  <span className="text-xs text-[#42474F]">EMA filter strength (higher = smoother)</span>
+                </div>
+              </div>
+              <span className="text-sm font-mono font-bold text-[#003D6A] bg-[#D4E4FC] px-3 py-1 rounded-lg">{draftSmoothing}</span>
             </div>
-            <div className="flex items-center gap-2 w-1/2">
+            <div className="ml-14 pr-1">
               <input
                 type="range" min="0" max="100" value={draftSmoothing}
-                className="flex-1 accent-primary"
+                className="w-full accent-[#003D6A] h-1.5"
                 onChange={(e) => setDraftSmoothing(parseInt(e.target.value))}
               />
-              <span className="text-[10px] text-white/40 w-6">{draftSmoothing}</span>
             </div>
           </div>
-          <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl border border-white/5">
-            <div>
-              <label className="font-space-grotesk tracking-wide text-xs uppercase block">UI Theme</label>
-              <span className="text-[10px] text-white/30">Color accent for the interface</span>
+
+          {/* UI Theme */}
+          <div className="bg-[#F3F3F3] rounded-2xl p-5 flex items-center justify-between gap-4 hover:bg-[#EEF3F8] transition-colors">
+            <div className="flex items-center gap-4 flex-1 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-[#D4E4FC] flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[#003D6A] text-lg">palette</span>
+              </div>
+              <div className="min-w-0">
+                <label className="font-space-grotesk font-semibold text-sm text-[#002746] block">UI Theme</label>
+                <span className="text-xs text-[#42474F]">Color accent for the interface</span>
+              </div>
             </div>
             <select
               value={draftTheme}
               onChange={(e) => setDraftTheme(e.target.value as ThemeId)}
-              className="bg-zinc-900 text-primary outline-none border border-primary/30 rounded-2xl px-2 py-1 text-xs"
+              className="bg-white text-[#002746] outline-none border border-[#C2C7D0]/40 focus:border-[#003D6A] rounded-xl px-3 py-2 text-sm font-space-grotesk cursor-pointer transition-colors"
             >
               <option value="holo-blue">Holo Blue</option>
               <option value="crimson">Crimson</option>
             </select>
           </div>
         </div>
+
+        {/* CTA — gradient button */}
         <button
           onClick={() => {
             applyTheme(draftTheme);
@@ -98,7 +135,7 @@ function SettingsModal({
             showToast(`Settings applied: ${draftTheme} theme, ${draftQuality} engine.`);
             closeModal();
           }}
-          className="mt-8 w-full bg-primary/20 hover:bg-primary text-primary hover:text-background border border-primary font-space-grotesk tracking-widest text-xs py-3 transition-colors uppercase"
+          className="mt-8 w-full bg-gradient-to-br from-[#002746] to-[#003D6A] hover:from-[#003D6A] hover:to-[#004D85] text-white font-space-grotesk font-bold tracking-wider text-sm py-4 rounded-2xl transition-all shadow-[0_4px_16px_rgba(0,39,70,0.25)] hover:shadow-[0_6px_24px_rgba(0,39,70,0.35)] active:translate-y-0.5 uppercase"
         >
           Apply Changes
         </button>
@@ -111,11 +148,11 @@ function DepthPanel({ brushThicknessRef }: { brushThicknessRef: React.MutableRef
   const [thickness, setThickness] = useState(brushThicknessRef.current);
   return (
     <div className="absolute left-24 top-1/2 -translate-y-1/2 glass-panel p-5 z-40 w-56 border border-primary/20 slide-in-from-left animate-in duration-300">
-      <div className="flex justify-between items-center border-b border-white/5 pb-3 mb-4">
+      <div className="flex justify-between items-center border-b border-black/5 pb-3 mb-4">
         <h3 className="text-[10px] uppercase tracking-widest font-space-grotesk text-primary opacity-60">Stroke Thickness</h3>
-        <span className="text-xs text-white/50">{thickness}px</span>
+        <span className="text-xs text-on-surface-variant">{thickness}px</span>
       </div>
-      <input type="range" min="1" max="30" value={thickness} className="w-full h-1 bg-white/20 rounded-2xl outline-none appearance-none accent-primary"
+      <input type="range" min="1" max="30" value={thickness} className="w-full h-1 bg-primary/15 rounded-2xl outline-none appearance-none accent-primary"
         onChange={(e) => {
           const val = parseInt(e.target.value);
           brushThicknessRef.current = val;
@@ -1321,7 +1358,7 @@ export default function App() {
       <header className="absolute top-0 left-0 w-full flex justify-between items-center px-12 h-20 z-50 bg-transparent border-b border-black/5">
         {/* Toast Notification */}
         {toastMessage && (
-          <div className="fixed top-24 left-1/2 -translate-x-1/2 z-50 bg-black/80 border border-primary/40 backdrop-blur-xl px-6 py-3 text-primary text-sm font-space-grotesk tracking-wider animate-in fade-in slide-in-from-top-4 duration-300 shadow-[0_0_20px_rgba(143,245,255,0.2)]">
+          <div className="fixed top-24 left-1/2 -translate-x-1/2 z-50 bg-white/95 backdrop-blur-xl border border-primary/30 px-6 py-3 text-primary text-sm font-space-grotesk tracking-wider animate-in fade-in slide-in-from-top-4 duration-300 shadow-[0_4px_24px_rgba(0,61,106,0.15)] rounded-2xl">
             {toastMessage}
           </div>
         )}
@@ -1534,10 +1571,14 @@ export default function App() {
               const canvasEl = e.currentTarget;
               // ── Text mode ──
               if (inputModeRef.current === 'text') {
+                e.preventDefault();
+                e.stopPropagation();
                 const rect = canvasEl.getBoundingClientRect();
                 setTextInputPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
                 setShowTextInput(true);
-                // autoFocus on <input> handles focus — no redundant setTimeout needed
+                // Focus the text input on the next tick — pointerdown holds capture
+                // which prevents autoFocus from working during the same event loop
+                setTimeout(() => { textInputRef.current?.focus(); }, 50);
                 return;
               }
               // ── Select mode ──
@@ -1874,7 +1915,7 @@ export default function App() {
         </div>
 
         {/* Webcam Setup & HUD */}
-        <div className="absolute bottom-8 right-8 w-64 aspect-video glass-panel overflow-hidden border border-white/10 z-20">
+        <div className="absolute bottom-8 right-8 w-64 aspect-video glass-panel overflow-hidden border border-primary/20 z-20">
           <div className="absolute inset-0 bg-zinc-900/60 z-0 flex items-center justify-center text-white/50 text-xs text-center p-2">
             {!isReady && !error && "Loading AI Models..."}
             {error && <span className="text-red-500 font-bold bg-red-500/10 px-2 py-1 rounded-2xl">{error}</span>}
@@ -1968,7 +2009,7 @@ export default function App() {
 
         {activeModal === 'Gestures' && (
           <div className="absolute inset-0 bg-black/40 z-50 flex items-center justify-center backdrop-blur-sm">
-            <div className="bg-[#FAFAFA] p-8 max-w-4xl w-full relative border border-white/20 rounded-[3rem] shadow-2xl flex flex-col gap-6">
+            <div className="bg-[#FAFAFA] p-8 max-w-4xl w-full relative border border-[#003D6A]/15 rounded-[3rem] shadow-[0_8px_40px_rgba(0,61,106,0.12)] flex flex-col gap-6">
               <button onClick={() => setActiveModal(null)} className="absolute top-8 right-8 text-[#003D6A] hover:opacity-70 transition-colors w-12 h-12 rounded-full border border-dashed border-[#003D6A]/30 flex items-center justify-center"><span className="material-symbols-outlined">close</span></button>
               
               <div>
@@ -2100,7 +2141,7 @@ export default function App() {
 
         {/* Top Tab Content Sections */}
         {activeTab === 'Layers' && (
-          <div className="absolute left-28 top-20 bottom-8 w-80 glass-panel z-30 border border-primary/10 shadow-[0_40px_80px_rgba(0,0,0,0.6)] fade-in animate-in flex flex-col">
+          <div className="absolute left-28 top-20 bottom-8 w-80 glass-panel z-30 border border-primary/10 shadow-[0_8px_32px_rgba(0,61,106,0.08)] fade-in animate-in flex flex-col">
             {/* Header */}
             <div className="px-5 py-4 border-b border-black/5 flex items-center justify-between">
               <h3 className="text-xs uppercase font-space-grotesk text-on-surface-variant tracking-widest">Layers</h3>
