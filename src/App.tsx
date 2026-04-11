@@ -178,6 +178,22 @@ export default function App() {
   const invalidateCache = useCallback(() => { cacheInvalidRef.current = true; visibleStrokesDirtyRef.current = true; }, []);
   const invalidateRenderCache = useCallback(() => { cacheInvalidRef.current = true; }, []);
 
+  // Inverse-transform screen → world space (mirrors the RAF loop's screenToWorld but
+  // uses drawingCanvasRef instead of the closed-over canvas so it's callable outside the useEffect)
+  const screenToWorldCoords = useCallback((sx: number, sy: number): { x: number; y: number } => {
+    const t = globalTransformRef.current;
+    const canvas = drawingCanvasRef.current;
+    const cw = (canvas?.width  ?? window.innerWidth)  / 2;
+    const ch = (canvas?.height ?? window.innerHeight) / 2;
+    const dx = sx - cw;
+    const dy = sy - ch;
+    const ux = dx / t.scale;
+    const uy = dy / t.scale;
+    const cosR = Math.cos((-t.rotation * Math.PI) / 180);
+    const sinR = Math.sin((-t.rotation * Math.PI) / 180);
+    return { x: cw + ux * cosR - uy * sinR, y: ch + ux * sinR + uy * cosR };
+  }, []);
+
   const addLayer = () => {
     const id = `layer-${Date.now()}`;
     const name = `Layer ${layersRef.current.length + 1}`;
@@ -368,7 +384,7 @@ export default function App() {
 
     // ─── Render a single stroke to a given context ───────────────────
     // themeSelColor is read inside render() so it updates with theme switches
-    let themeSelColor = '#8ff5ff';
+    let themeSelColor = '#003D6A';
 
     function renderStroke(targetCtx: CanvasRenderingContext2D, stroke: Stroke, isSelected: boolean, isHovered: boolean) {
       targetCtx.save();
@@ -419,39 +435,70 @@ export default function App() {
             targetCtx.shadowColor = themeSelColor;
             targetCtx.shadowBlur = 8;
             targetCtx.fill();
-            targetCtx.shadowBlur = 0;
           });
-          targetCtx.globalAlpha = 1;
           targetCtx.restore();
         }
-      }
 
-      targetCtx.lineCap = 'round';
-      targetCtx.lineJoin = 'round';
+        // ─── Draw stroke body ──────────────────────────────────────────────
+        const isText = stroke.id.startsWith('text-');
+        const isAsset = stroke.id.startsWith('asset-');
+        const isScatter = stroke.id.includes('SCATTER') || stroke.id.includes('scatter');
+        const baseThickness = stroke.thickness;
+        // Birth ease: 0→1 over 1500ms for entry animation
+        const birthAge = performance.now() - stroke.birthTime;
+        const birthEase = Math.min(1, birthAge / 600);
 
-      // Birth animation: ramp up opacity and width over first 500ms
-      const strokeAge = stroke.birthTime ? performance.now() - stroke.birthTime : Infinity;
-      const birthProgress = Math.min(1, strokeAge / 500);
-      const birthEase = birthProgress < 1 ? 0.3 + 0.7 * birthProgress * (2 - birthProgress) : 1;
-      const baseThickness = stroke.thickness * birthEase;
-
-      const isText = stroke.id.startsWith('text-');
-
-      // Draw stroke
-      if (stroke.points.length > 0) {
         if (isText) {
           // Render rasterized text points as glowing scatter dots
           targetCtx.fillStyle = stroke.color;
           targetCtx.shadowColor = stroke.color;
           targetCtx.shadowBlur = 10 * birthEase;
           targetCtx.globalAlpha = Math.max(0.2, birthEase);
-          
           targetCtx.beginPath();
           for (let i = 0; i < stroke.points.length; i++) {
              targetCtx.moveTo(stroke.points[i].x, stroke.points[i].y);
              targetCtx.arc(stroke.points[i].x, stroke.points[i].y, 1.5, 0, Math.PI * 2);
           }
           targetCtx.fill();
+        } else if (isAsset && isScatter) {
+          // Scatter asset: render as individual filled dots (no connecting lines)
+          targetCtx.fillStyle = stroke.color;
+          targetCtx.shadowColor = stroke.color;
+          targetCtx.shadowBlur = 8 * birthEase;
+          targetCtx.globalAlpha = 0.85 * birthEase;
+          targetCtx.beginPath();
+          for (let i = 0; i < stroke.points.length; i++) {
+            targetCtx.moveTo(stroke.points[i].x, stroke.points[i].y);
+            targetCtx.arc(stroke.points[i].x, stroke.points[i].y, baseThickness * 0.6, 0, Math.PI * 2);
+          }
+          targetCtx.fill();
+        } else if (isAsset) {
+          // Asset shape: use straight lineTo so polygon/square/star corners stay crisp
+          for (let layer = 0; layer < 2; layer++) {
+            targetCtx.save();
+            targetCtx.beginPath();
+            targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+            for (let i = 1; i < stroke.points.length; i++) {
+              targetCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
+            }
+            targetCtx.lineCap = 'round';
+            targetCtx.lineJoin = 'miter';
+            if (layer === 0) {
+              targetCtx.strokeStyle = stroke.color;
+              targetCtx.shadowColor = stroke.color;
+              targetCtx.shadowBlur = 18 * birthEase;
+              targetCtx.lineWidth = baseThickness * 1.5;
+              targetCtx.globalAlpha = 0.45 * birthEase;
+            } else {
+              targetCtx.strokeStyle = stroke.color;
+              targetCtx.shadowColor = stroke.color;
+              targetCtx.shadowBlur = 6 * birthEase;
+              targetCtx.lineWidth = baseThickness;
+              targetCtx.globalAlpha = 0.9 * birthEase;
+            }
+            targetCtx.stroke();
+            targetCtx.restore();
+          }
         } else if (stroke.points.length < 3) {
            // Fallback for tiny dots: solid path
            targetCtx.beginPath();
@@ -472,88 +519,103 @@ export default function App() {
            targetCtx.stroke();
            // 3. Bright inner core
            if (baseThickness > 4) {
-             targetCtx.strokeStyle = '#ffffff';
+             targetCtx.strokeStyle = stroke.color;
              targetCtx.lineWidth = baseThickness * 0.3;
              targetCtx.shadowBlur = 2;
              targetCtx.globalAlpha = birthEase;
              targetCtx.stroke();
            }
         } else {
-           // Segment-by-segment drawing for dynamic width
-           for (let layer = 0; layer < 3; layer++) {
+           // ── Layer 0: Ambient glow — single batched path (1 GPU draw call instead of N) ──
+           // shadowBlur on N tiny segments is the #1 Canvas2D perf killer; batch it.
+           {
              targetCtx.save();
-             
-             if (layer === 0) {
-                 targetCtx.strokeStyle = stroke.color;
-                 targetCtx.shadowColor = stroke.color;
-                 targetCtx.shadowBlur = 25 * birthEase;
-                 targetCtx.globalAlpha = 0.5 * birthEase;
-             } else if (layer === 1) {
-                 targetCtx.strokeStyle = stroke.color;
-                 targetCtx.shadowColor = stroke.color;
-                 targetCtx.shadowBlur = 10 * birthEase;
-                 targetCtx.globalAlpha = 0.8 * birthEase;
-             } else {
-                 if (baseThickness <= 4) { targetCtx.restore(); continue; }
-                 targetCtx.strokeStyle = '#ffffff';
-                 targetCtx.shadowBlur = 2;
-                 targetCtx.globalAlpha = birthEase;
+             targetCtx.strokeStyle = stroke.color;
+             targetCtx.shadowColor = stroke.color;
+             targetCtx.shadowBlur = 18 * birthEase;
+             targetCtx.lineWidth = baseThickness * 1.5;
+             targetCtx.globalAlpha = 0.45 * birthEase;
+             targetCtx.lineCap = 'round';
+             targetCtx.lineJoin = 'round';
+             targetCtx.beginPath();
+             targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+             for (let i = 1; i < stroke.points.length - 1; i++) {
+               const ni = i + 1 < stroke.points.length ? i + 1 : i;
+               targetCtx.quadraticCurveTo(
+                 stroke.points[i].x, stroke.points[i].y,
+                 (stroke.points[i].x + stroke.points[ni].x) / 2,
+                 (stroke.points[i].y + stroke.points[ni].y) / 2
+               );
              }
+             targetCtx.stroke();
+             targetCtx.restore();
+           }
 
-             // Compute dynamic width per segment
+           // ── Layer 1: Main body — per-segment for dynamic pressure width ──
+           {
+             targetCtx.save();
+             targetCtx.strokeStyle = stroke.color;
+             targetCtx.shadowColor = stroke.color;
+             targetCtx.shadowBlur = 8 * birthEase;
+             targetCtx.globalAlpha = 0.85 * birthEase;
              let prevPoint = stroke.points[0];
              let i = 1;
              for (; i < stroke.points.length - 2; i++) {
-                 const p1 = stroke.points[i];
-                 const p2 = stroke.points[i + 1];
-                 const xc = (p1.x + p2.x) / 2;
-                 const yc = (p1.y + p2.y) / 2;
-                 
-                 // Distance represents velocity (sampled at ~60fps)
-                 const dist = Math.hypot(p1.x - prevPoint.x, p1.y - prevPoint.y);
-                 
-                 // Normalize dist: assume 0 = max thick, 40+ = min thick
-                 const speedFactor = Math.min(1, Math.max(0, dist / 40));
-                 // Exponential falloff for sharper tapers
-                 const thicknessScale = 1.0 - (speedFactor * 0.7); 
-                 
-                 // Z-depth thickness: use averaged per-point z if present, else fall back to baseThickness
-                 const zThick = (p1.z !== undefined || prevPoint.z !== undefined)
-                   ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
-                   : baseThickness;
-                 let layerThick = zThick * thicknessScale;
-                 if (layer === 0) layerThick *= 1.5;
-                 else if (layer === 2) layerThick *= 0.3;
-                 
-                 targetCtx.beginPath();
-                 targetCtx.moveTo(prevPoint.x, prevPoint.y);
-                 targetCtx.quadraticCurveTo(p1.x, p1.y, xc, yc);
-                 targetCtx.lineWidth = layerThick;
-                 targetCtx.stroke();
-                 
-                 prevPoint = { x: xc, y: yc, z: p1.z }; // carry z so tail segment retains depth context
+               const p1 = stroke.points[i];
+               const p2 = stroke.points[i + 1];
+               const xc = (p1.x + p2.x) / 2;
+               const yc = (p1.y + p2.y) / 2;
+               const dist = Math.hypot(p1.x - prevPoint.x, p1.y - prevPoint.y);
+               const speedFactor = Math.min(1, Math.max(0, dist / 40));
+               const thicknessScale = 1.0 - speedFactor * 0.7;
+               const zThick = (p1.z !== undefined || prevPoint.z !== undefined)
+                 ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
+                 : baseThickness;
+               targetCtx.beginPath();
+               targetCtx.moveTo(prevPoint.x, prevPoint.y);
+               targetCtx.quadraticCurveTo(p1.x, p1.y, xc, yc);
+               targetCtx.lineWidth = zThick * thicknessScale;
+               targetCtx.stroke();
+               prevPoint = { x: xc, y: yc, z: p1.z };
              }
-             
              // Final tail segment
-             const p1 = stroke.points[i];
-             const p2 = stroke.points[i + 1];
-             const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-             const speedFactor = Math.min(1, Math.max(0, dist / 40));
-             const thicknessScale = 1.0 - (speedFactor * 0.7);
-             // Z-depth thickness for tail segment
-             const tailZThick = (p1.z !== undefined || prevPoint.z !== undefined)
-               ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
-               : baseThickness;
-             let layerThick = tailZThick * thicknessScale;
-             if (layer === 0) layerThick *= 1.5;
-             else if (layer === 2) layerThick *= 0.3;
-             
-             targetCtx.beginPath();
-             targetCtx.moveTo(prevPoint.x, prevPoint.y);
-             targetCtx.quadraticCurveTo(p1.x, p1.y, p2.x, p2.y);
-             targetCtx.lineWidth = layerThick;
-             targetCtx.stroke();
+             if (i < stroke.points.length) {
+               const p1 = stroke.points[i];
+               const p2 = stroke.points[i + 1] ?? p1;
+               const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+               const thicknessScale = 1.0 - Math.min(1, Math.max(0, dist / 40)) * 0.7;
+               const tailZThick = (p1.z !== undefined || prevPoint.z !== undefined)
+                 ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
+                 : baseThickness;
+               targetCtx.beginPath();
+               targetCtx.moveTo(prevPoint.x, prevPoint.y);
+               targetCtx.quadraticCurveTo(p1.x, p1.y, p2.x, p2.y);
+               targetCtx.lineWidth = tailZThick * thicknessScale;
+               targetCtx.stroke();
+             }
+             targetCtx.restore();
+           }
 
+           // ── Layer 2: Inner core — single batched path, NO shadow (saves a full GPU compositing pass) ──
+           if (baseThickness > 4) {
+             targetCtx.save();
+             targetCtx.strokeStyle = stroke.color;
+             targetCtx.shadowBlur = 0;
+             targetCtx.lineWidth = baseThickness * 0.3;
+             targetCtx.globalAlpha = birthEase * 0.8;
+             targetCtx.lineCap = 'round';
+             targetCtx.lineJoin = 'round';
+             targetCtx.beginPath();
+             targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+             for (let i = 1; i < stroke.points.length - 1; i++) {
+               const ni = i + 1 < stroke.points.length ? i + 1 : i;
+               targetCtx.quadraticCurveTo(
+                 stroke.points[i].x, stroke.points[i].y,
+                 (stroke.points[i].x + stroke.points[ni].x) / 2,
+                 (stroke.points[i].y + stroke.points[ni].y) / 2
+               );
+             }
+             targetCtx.stroke();
              targetCtx.restore();
            }
         }
@@ -996,7 +1058,7 @@ export default function App() {
           layersRef.current.filter(l => l.visible).forEach(layer => {
             layer.strokes.forEach(stroke => {
               // Skip actively-being-drawn, animating strokes, and strokes being manipulated live
-              const isAnimating = now - stroke.birthTime < 1500;
+              const isAnimating = now - stroke.birthTime < 600;
               if (stroke.id === activeDrawingId || isAnimating || liveManipulationIdsRef.current.has(stroke.id)) {
                 if (isAnimating) pendingBakesRef.current.add(stroke.id);
                 return;
@@ -1041,7 +1103,7 @@ export default function App() {
           const stroke = strokeIndexRef.current.get(strokeId);
           if (stroke) {
             const age = now - stroke.birthTime;
-            if (age < 1500) {
+            if (age < 600) {
               const isSelected = selectAllModeRef.current || stroke.id === currentActiveId;
               const isHovered = !selectAllModeRef.current && stroke.id === hoveredStrokeIdRef.current && !isSelected;
               renderStroke(ctx!, stroke, isSelected, isHovered);
@@ -1189,7 +1251,7 @@ export default function App() {
           corners.forEach(([hx, hy]) => {
             ctx!.beginPath();
             ctx!.arc(hx, hy, 6, 0, Math.PI * 2);
-            ctx!.fillStyle = '#0c0e12';
+            ctx!.fillStyle = '#FFFFFF';
             ctx!.fill();
             ctx!.beginPath();
             ctx!.arc(hx, hy, 6, 0, Math.PI * 2);
@@ -1215,7 +1277,7 @@ export default function App() {
           // Rotation circle
           ctx!.beginPath();
           ctx!.arc(0, rotHandleY, 8, 0, Math.PI * 2);
-          ctx!.fillStyle = '#0c0e12';
+          ctx!.fillStyle = '#FFFFFF';
           ctx!.fill();
           ctx!.beginPath();
           ctx!.arc(0, rotHandleY, 8, 0, Math.PI * 2);
@@ -1294,13 +1356,20 @@ export default function App() {
             const next = inputMode === 'select' ? 'hand' : 'select';
             setInputMode(next);
             mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
-            if (next !== 'select') { mouseSelectedIdRef.current = null; mouseDragActiveRef.current = false; invalidateCache(); }
+            if (next !== 'select') {
+              mouseSelectedIdRef.current = null;
+              mouseDragActiveRef.current = false;
+              // Reset select-all mode when leaving select
+              selectAllModeRef.current = false;
+              setSelectAllModeState(false);
+              invalidateCache();
+            }
             showToast(next === 'select' ? 'Select mode — click to select, drag to move/resize/rotate' : 'Hand tracking mode restored');
-          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'select' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
+          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'select' ? 'bg-primary text-on-primary rounded-full shadow-lg shadow-primary/30' : 'text-slate-400 hover:bg-black/5 hover:text-primary'}`}>
             <span className="material-symbols-outlined mb-1">arrow_selector_tool</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Select</span>
           </div>
-          <div onClick={() => setActiveSidebarPanel(activeSidebarPanel === 'Brushes' ? null : 'Brushes')} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${activeSidebarPanel === 'Brushes' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
+          <div onClick={() => setActiveSidebarPanel(activeSidebarPanel === 'Brushes' ? null : 'Brushes')} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${activeSidebarPanel === 'Brushes' ? 'bg-primary text-on-primary rounded-full shadow-lg shadow-primary/30' : 'text-slate-400 hover:bg-black/5 hover:text-primary'}`}>
             <span className="material-symbols-outlined mb-1">brush</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Brushes</span>
           </div>
@@ -1321,7 +1390,7 @@ export default function App() {
             }
             mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
             showToast(next === 'mouse' ? 'Mouse drawing enabled — click & drag to draw' : 'Hand tracking mode restored');
-          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'mouse' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
+          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'mouse' ? 'bg-primary text-on-primary rounded-full shadow-lg shadow-primary/30' : 'text-slate-400 hover:bg-black/5 hover:text-primary'}`}>
             <span className="material-symbols-outlined mb-1">draw</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Mouse</span>
           </div>
@@ -1331,15 +1400,15 @@ export default function App() {
             setInputMode(next);
             mouseDrawingRef.current = false; mouseStrokeIdRef.current = null;
             showToast(next === 'text' ? 'Text tool active — click canvas to place text' : 'Hand tracking mode restored');
-          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'text' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
+          }} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${inputMode === 'text' ? 'bg-primary text-on-primary rounded-full shadow-lg shadow-primary/30' : 'text-slate-400 hover:bg-black/5 hover:text-primary'}`}>
             <span className="material-symbols-outlined mb-1">text_fields</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Text</span>
           </div>
-          <div onClick={() => setActiveModal('Gestures')} className="text-slate-400 py-4 flex flex-col items-center justify-center hover:bg-black/5 hover:text-[#003D6A] transition-colors cursor-pointer group rounded-full">
+          <div onClick={() => setActiveModal('Gestures')} className="text-slate-400 py-4 flex flex-col items-center justify-center hover:bg-black/5 hover:text-primary transition-colors cursor-pointer group rounded-full">
             <span className="material-symbols-outlined mb-1">gesture</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Gestures</span>
           </div>
-          <div onClick={() => setActiveSidebarPanel(activeSidebarPanel === 'Depth' ? null : 'Depth')} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${activeSidebarPanel === 'Depth' ? 'bg-[#34C1FA] text-white rounded-full shadow-lg shadow-[#34C1FA]/30' : 'text-slate-400 hover:bg-black/5 hover:text-[#003D6A]'}`}>
+          <div onClick={() => setActiveSidebarPanel(activeSidebarPanel === 'Depth' ? null : 'Depth')} className={`py-4 flex flex-col items-center justify-center cursor-pointer transition-colors group ${activeSidebarPanel === 'Depth' ? 'bg-primary text-on-primary rounded-full shadow-lg shadow-primary/30' : 'text-slate-400 hover:bg-black/5 hover:text-primary'}`}>
             <span className="material-symbols-outlined mb-1">layers</span>
             <span className="font-space-grotesk text-[10px] uppercase tracking-tighter">Depth</span>
           </div>
@@ -1351,7 +1420,7 @@ export default function App() {
               bgCanvas.height = exportCanvas.height;
               const bctx = bgCanvas.getContext('2d');
               if (bctx) {
-                bctx.fillStyle = '#0a0a0a';
+                bctx.fillStyle = '#FAFAFA';
                 bctx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
 
                 // Synchronously render all strokes directly onto the export canvas
@@ -1567,17 +1636,19 @@ export default function App() {
               const rect = canvasEl.getBoundingClientRect();
               const sx = e.clientX - rect.left;
               const sy = e.clientY - rect.top;
+              // Convert screen coords to world space so mouse strokes render correctly under zoom/rotate
+              const worldPt = screenToWorldCoords(sx, sy);
               const activeLayer = layersRef.current.find((l: Layer) => l.id === activeLayerIdRef.current)
                 ?? layersRef.current[layersRef.current.length - 1];
               if (activeLayer.locked) return;
               const newStroke: Stroke = {
                 id: `mouse-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-                points: [{ x: sx, y: sy }],
+                points: [{ x: worldPt.x, y: worldPt.y }],
                 color: brushColorRef.current,
                 thickness: brushThicknessRef.current,
                 scale: 1, rotation: 0, translate: { x: 0, y: 0 },
-                centroid: { x: sx, y: sy },
-                bounds: { minX: sx, minY: sy, maxX: sx, maxY: sy },
+                centroid: { x: worldPt.x, y: worldPt.y },
+                bounds: { minX: worldPt.x, minY: worldPt.y, maxX: worldPt.x, maxY: worldPt.y },
                 birthTime: performance.now(),
               };
               activeLayer.strokes.push(newStroke);
@@ -1638,16 +1709,18 @@ export default function App() {
               const rect = e.currentTarget.getBoundingClientRect();
               const sx = e.clientX - rect.left;
               const sy = e.clientY - rect.top;
+              // Convert to world space to match stroke coordinate system
+              const worldPt = screenToWorldCoords(sx, sy);
               const stroke = strokeIndexRef.current.get(mouseStrokeIdRef.current ?? '');
               if (!stroke) return;
               const prevPt = stroke.points[stroke.points.length - 1];
-              if (Math.hypot(prevPt.x - sx, prevPt.y - sy) > 1.5) {
-                stroke.points.push({ x: sx, y: sy });
+              if (Math.hypot(prevPt.x - worldPt.x, prevPt.y - worldPt.y) > 1.5) {
+                stroke.points.push({ x: worldPt.x, y: worldPt.y });
                 const b = stroke.bounds;
-                if (sx < b.minX) b.minX = sx;
-                if (sy < b.minY) b.minY = sy;
-                if (sx > b.maxX) b.maxX = sx;
-                if (sy > b.maxY) b.maxY = sy;
+                if (worldPt.x < b.minX) b.minX = worldPt.x;
+                if (worldPt.y < b.minY) b.minY = worldPt.y;
+                if (worldPt.x > b.maxX) b.maxX = worldPt.x;
+                if (worldPt.y > b.maxY) b.maxY = worldPt.y;
               }
             }}
             onPointerUp={() => {
@@ -1674,6 +1747,20 @@ export default function App() {
                 syncLayersState();
               }
             }}
+            onPointerLeave={() => {
+              // Finalize any in-progress mouse stroke when cursor exits canvas
+              if (mouseDrawingRef.current && inputModeRef.current === 'mouse') {
+                const stroke = strokeIndexRef.current.get(mouseStrokeIdRef.current ?? '');
+                if (stroke) {
+                  if (stroke.points.length > 20) stroke.points = decimatePoints(stroke.points, 1.0);
+                  stroke.centroid = computeCentroid(stroke.points);
+                  stroke.bounds = computeBounds(stroke.points);
+                }
+                mouseDrawingRef.current = false;
+                invalidateCache();
+                syncLayersState();
+              }
+            }}
           />
         </div>
 
@@ -1688,7 +1775,7 @@ export default function App() {
               type="text"
               placeholder="Type text…"
               autoFocus
-              className="bg-black/80 border border-primary/60 text-primary px-4 py-2 text-lg font-space-grotesk outline-none shadow-[0_0_30px_rgba(143,245,255,0.2)] min-w-[200px]"
+              className="bg-white border border-primary/40 text-primary shadow-[0_4px_24px_rgba(0,61,106,0.15)] px-4 py-2 text-base font-space-grotesk outline-none rounded-xl min-w-[200px] placeholder:text-primary/40"
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.currentTarget.blur(); // trigger onBlur to commit
@@ -1757,10 +1844,10 @@ export default function App() {
           <button onClick={() => { globalTransformRef.current.scale = Math.max(0.1, globalTransformRef.current.scale / 1.2); invalidateRenderCache(); showToast('Zoom out applied'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-primary border-primary/40 hover:bg-primary/20 transition-all active:bg-primary/40">
             <span className="material-symbols-outlined">zoom_out</span>
           </button>
-          <button onClick={() => { globalTransformRef.current.rotation += 90; invalidateRenderCache(); showToast('Rotated 90 degrees'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-on-surface-variant hover:text-white transition-all active:bg-white/10">
+          <button onClick={() => { globalTransformRef.current.rotation += 90; invalidateRenderCache(); showToast('Rotated 90 degrees'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-on-surface-variant hover:text-primary transition-all active:bg-primary/10">
             <span className="material-symbols-outlined">rotate_right</span>
           </button>
-          <button onClick={() => { globalTransformRef.current.rotation = 0; globalTransformRef.current.scale = 1; invalidateRenderCache(); showToast('Alignment straight'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-on-surface-variant hover:text-white transition-all active:bg-white/10">
+          <button onClick={() => { globalTransformRef.current.rotation = 0; globalTransformRef.current.scale = 1; invalidateRenderCache(); showToast('Alignment straight'); }} className="w-12 h-12 glass-panel flex items-center justify-center text-on-surface-variant hover:text-primary transition-all active:bg-primary/10">
             <span className="material-symbols-outlined">straighten</span>
           </button>
           <div className="h-4"></div>
@@ -1769,7 +1856,7 @@ export default function App() {
             setSelectAllModeState(selectAllModeRef.current);
             invalidateCache();
             showToast(selectAllModeRef.current ? 'Selected all strokes' : 'Deselected all strokes');
-          }} className={`w-12 h-12 glass-panel flex items-center justify-center transition-all group ${selectAllModeState ? 'text-primary border-primary/40 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'text-on-surface-variant border-white/10'}`}>
+          }} className={`w-12 h-12 glass-panel flex items-center justify-center transition-all group ${selectAllModeState ? 'text-primary border-primary/40 shadow-[0_0_15px_rgba(var(--theme-accent-hex)/0.4)]' : 'text-on-surface-variant border-black/5'}`}>
             <span className="material-symbols-outlined group-active:scale-90 transition-transform">select_all</span>
           </button>
           <button onClick={() => {
@@ -1798,7 +1885,7 @@ export default function App() {
           <div className="absolute inset-0 z-10 p-3 flex flex-col justify-between pointer-events-none">
             <div className="flex justify-between items-start">
               <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 ${error ? 'bg-red-500' : isReady ? 'bg-error' : 'bg-primary'} rounded-full ${error ? '' : 'animate-pulse'}`}></div>
+                <div className={`w-2 h-2 ${error ? 'bg-red-500' : isReady ? 'bg-green-500' : 'bg-primary'} rounded-full ${isReady && !error ? '' : 'animate-pulse'}`}></div>
                 <span className={`text-[10px] font-label ${error ? 'text-red-500' : 'text-on-surface'} uppercase tracking-widest`}>{error ? 'CAM ERROR' : isReady ? 'Live Feed' : 'Initializing'}</span>
               </div>
             </div>
@@ -1853,27 +1940,27 @@ export default function App() {
             <div className="absolute top-24 right-28 w-80 glass-panel border border-primary/20 p-6 z-40 shadow-[0_0_40px_rgba(0,0,0,0.5)]">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="font-space-grotesk text-sm text-primary uppercase tracking-widest">Activity Log</h3>
-                <button onClick={() => setActiveModal(null)} className="text-white/40 hover:text-white transition-colors"><span className="material-symbols-outlined text-sm">close</span></button>
+                <button onClick={() => setActiveModal(null)} className="text-on-surface-variant hover:text-primary transition-colors"><span className="material-symbols-outlined text-sm">close</span></button>
               </div>
-              <div className="mb-3 text-[10px] text-white/30 font-mono">
+              <div className="mb-3 text-[10px] text-on-surface-variant/60 font-mono">
                 {layers.length} layer{layers.length !== 1 ? 's' : ''} · {allStrokes.length} stroke{allStrokes.length !== 1 ? 's' : ''} total
               </div>
-              <div className="space-y-2 text-xs text-white/60 max-h-80 overflow-y-auto pr-2 custom-scrollbar">
-                <div className="p-2 bg-white/5 border-l-2 border-primary">System initialized</div>
-                <div className="p-2 bg-white/5 border-l-2 border-primary">MediaPipe hooks connected</div>
+              <div className="space-y-2 text-xs text-on-surface max-h-80 overflow-y-auto pr-2 custom-scrollbar">
+                <div className="p-2 bg-primary/5 border-l-2 border-primary text-on-surface">System initialized</div>
+                <div className="p-2 bg-primary/5 border-l-2 border-primary text-on-surface">MediaPipe hooks connected</div>
                 {layersRef.current.map(layer => (
                   <div key={layer.id}>
-                    <div className="p-2 bg-white/5 border-l-2 border-secondary/60 text-white/50">
+                    <div className="p-2 bg-primary/5 border-l-2 border-secondary/60 text-on-surface-variant">
                       {layer.name} — {layer.strokes.length} strokes {!layer.visible ? '(hidden)' : ''}
                     </div>
                     {layer.strokes.map((s, i) => (
-                      <div key={s.id} className="ml-3 p-1.5 bg-white/3 border-l border-white/10 text-white/30 text-[10px] font-mono">
+                      <div key={s.id} className="ml-3 p-1.5 bg-black/3 border-l border-black/5 text-on-surface-variant/50 text-[10px] font-mono">
                         ↳ stroke #{i + 1} · {s.points.length}pt · {s.color}
                       </div>
                     ))}
                   </div>
                 ))}
-                {allStrokes.length === 0 && <div className="text-white/20 italic mt-4 text-center">No strokes yet</div>}
+                {allStrokes.length === 0 && <div className="text-on-surface-variant/40 italic mt-4 text-center">No strokes yet</div>}
               </div>
             </div>
           );
@@ -1988,8 +2075,7 @@ export default function App() {
                   Pro Tip: Combine Left Hand Rotate with Right Hand Draw for helical structures.
                 </div>
                 <div className="flex gap-4">
-                  <button className="px-6 py-3 bg-slate-100 text-[#003D6A] rounded-full font-bold text-sm hover:bg-slate-200 transition-colors">Watch Video</button>
-                  <button onClick={() => setActiveModal(null)} className="px-8 py-3 bg-[#34C1FA] text-white rounded-full font-bold text-sm shadow-[0_0_20px_rgba(52,193,250,0.4)] border border-dashed border-white/50 hover:bg-[#20AEEB] transition-colors">I'm Ready</button>
+                  <button onClick={() => setActiveModal(null)} className="px-8 py-3 bg-primary text-on-primary rounded-full font-bold text-sm shadow-[0_0_20px_rgba(0,61,106,0.3)] hover:opacity-90 transition-opacity">I'm Ready</button>
                 </div>
               </div>
             </div>
@@ -1999,10 +2085,10 @@ export default function App() {
         {/* Sidebar Dynamic Panels */}
         {activeSidebarPanel === 'Brushes' && (
           <div className="absolute left-24 top-1/3 -translate-y-1/2 glass-panel p-5 z-40 flex flex-col gap-4 border border-primary/20 slide-in-from-left animate-in duration-300">
-            <h3 className="text-[10px] uppercase tracking-widest font-space-grotesk text-primary opacity-60 mb-1 border-b border-white/5 pb-2">Color Palette</h3>
+            <h3 className="text-[10px] uppercase tracking-widest font-space-grotesk text-primary opacity-60 mb-1 border-b border-black/5 pb-2">Color Palette</h3>
             <div className="grid grid-cols-2 gap-3">
               {['#003D6A', '#FF3B30', '#FF9F0A', '#30D158', '#34C1FA', '#5E5CE6', '#FF6B5B', '#1C1C1E'].map(c => (
-                <button key={c} onClick={() => { brushColorRef.current = c; setBrushColorState(c); setActiveSidebarPanel(null); showToast('Active color updated'); }} className={`w-10 h-10 rounded-full border-2 transition-transform hover:scale-110 ${brushColorState === c ? 'border-primary scale-110 shadow-[0_0_15px_rgba(143,245,255,0.4)]' : 'border-white/20'}`} style={{ backgroundColor: c }}></button>
+                <button key={c} onClick={() => { brushColorRef.current = c; setBrushColorState(c); setActiveSidebarPanel(null); showToast('Active color updated'); }} className={`w-10 h-10 rounded-full border-2 transition-transform hover:scale-110 ${brushColorState === c ? 'border-primary scale-110 shadow-[0_0_15px_rgba(var(--theme-accent-hex)/0.5)]' : 'border-black/10'}`} style={{ backgroundColor: c }}></button>
               ))}
             </div>
           </div>
@@ -2016,8 +2102,8 @@ export default function App() {
         {activeTab === 'Layers' && (
           <div className="absolute left-28 top-20 bottom-8 w-80 glass-panel z-30 border border-primary/10 shadow-[0_40px_80px_rgba(0,0,0,0.6)] fade-in animate-in flex flex-col">
             {/* Header */}
-            <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
-              <h3 className="text-xs uppercase font-space-grotesk text-white/70 tracking-widest">Layers</h3>
+            <div className="px-5 py-4 border-b border-black/5 flex items-center justify-between">
+              <h3 className="text-xs uppercase font-space-grotesk text-on-surface-variant tracking-widest">Layers</h3>
               <button
                 onClick={addLayer}
                 className="flex items-center gap-1 text-[10px] text-primary border border-primary/30 px-3 py-1 hover:bg-primary/10 transition-colors uppercase font-space-grotesk tracking-wider"
@@ -2036,8 +2122,8 @@ export default function App() {
                     key={layer.id}
                     onClick={() => { activeLayerIdRef.current = layer.id; syncLayersState(); }}
                     className={`group relative flex items-center gap-3 px-4 py-3 rounded-2xl cursor-pointer transition-all border ${isActive
-                        ? 'bg-primary/10 border-primary/40 shadow-[0_0_12px_rgba(143,245,255,0.12)]'
-                        : 'bg-white/3 border-white/8 hover:border-white/20 hover:bg-white/5'
+                        ? 'bg-primary/10 border-primary/40 shadow-[0_0_12px_rgba(0,61,106,0.12)]'
+                        : 'bg-black/2 border-black/5 hover:border-primary/20 hover:bg-primary/5'
                       }`}
                   >
                     {/* Active indicator bar */}
@@ -2046,7 +2132,7 @@ export default function App() {
                     {/* Eye icon - visibility toggle */}
                     <button
                       onClick={(e) => { e.stopPropagation(); toggleLayerVisibility(layer.id); }}
-                      className="text-white/40 hover:text-white transition-colors shrink-0"
+                      className="text-on-surface-variant hover:text-primary transition-colors shrink-0"
                       title={layer.visible ? 'Hide layer' : 'Show layer'}
                     >
                       <span className="material-symbols-outlined text-base">
@@ -2057,7 +2143,7 @@ export default function App() {
                     {/* Lock icon - lock toggle */}
                     <button
                       onClick={(e) => { e.stopPropagation(); toggleLayerLock(layer.id); }}
-                      className={`${layer.locked ? 'text-primary/70' : 'text-white/40'} hover:text-primary transition-colors shrink-0`}
+                      className={`${layer.locked ? 'text-primary/70' : 'text-on-surface-variant'} hover:text-primary transition-colors shrink-0`}
                       title={layer.locked ? 'Unlock layer' : 'Lock layer'}
                     >
                       <span className="material-symbols-outlined text-base">
@@ -2072,19 +2158,19 @@ export default function App() {
                       onBlur={(e) => renameLayer(layer.id, e.currentTarget.textContent ?? layer.name)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (e.currentTarget as HTMLElement).blur(); } }}
                       onClick={(e) => e.stopPropagation()}
-                      className={`flex-1 min-w-0 text-xs font-space-grotesk truncate outline-none rounded-md px-1 py-0.5 focus:bg-white/10 ${isActive ? 'text-primary' : layer.visible ? 'text-white/80' : 'text-white/30 line-through'
+                      className={`flex-1 min-w-0 text-xs font-space-grotesk truncate outline-none rounded-md px-1 py-0.5 focus:bg-primary/5 ${isActive ? 'text-primary' : layer.visible ? 'text-on-surface' : 'text-on-surface-variant line-through'
                         }`}
                     >
                       {layer.name}
                     </span>
 
                     {/* Stroke count badge */}
-                    <span className="text-[10px] text-white/30 font-mono shrink-0">{strokeCount}</span>
+                    <span className="text-[10px] text-on-surface-variant/50 font-mono shrink-0">{strokeCount}</span>
 
                     {/* Delete button */}
                     <button
                       onClick={(e) => { e.stopPropagation(); deleteLayer(layer.id); }}
-                      className="text-white/20 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+                      className="text-on-surface-variant/40 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
                       title="Delete layer"
                     >
                       <span className="material-symbols-outlined text-sm">delete</span>
@@ -2095,7 +2181,7 @@ export default function App() {
             </div>
 
             {/* Footer: active layer info */}
-            <div className="px-5 py-3 border-t border-white/5 text-[10px] text-white/30 font-mono tracking-wider">
+            <div className="px-5 py-3 border-t border-black/5 text-[10px] text-on-surface-variant/60 font-mono tracking-wider">
               ACTIVE: {layers.find(l => l.id === activeLayerIdRef.current)?.name ?? '—'}
               &nbsp;·&nbsp;{layers.filter(l => l.visible).length}/{layers.length} visible
             </div>
