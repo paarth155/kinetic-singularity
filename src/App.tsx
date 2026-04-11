@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback, lazy, Suspense } from 'react';
 import { useHandTracking, type HandTrackingConfig } from './useHandTracking';
 import LoginPage, { type AuthUser } from './LoginPage';
+import { AppSkeleton, LoginSkeleton } from './Skeletons';
 const Tutorial3D = lazy(() => import('./Tutorial3D'));
 
 import {
@@ -366,6 +367,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('Draw');
   const [activeModal, setActiveModal] = useState<string | null>(null);
   const [showTutorial, setShowTutorial] = useState(false);
+  const [appReady, setAppReady] = useState(false);
   const [activeSidebarPanel, setActiveSidebarPanel] = useState<string | null>(null);
 
   // ─── Theme ───────────────────────────────────────────────────────────────────
@@ -1373,13 +1375,24 @@ export default function App() {
       animId = requestAnimationFrame(render);
     }
     render();
+    // Mark app as ready after first frame
+    requestAnimationFrame(() => setAppReady(true));
 
     return () => cancelAnimationFrame(animId);
   }, []);
 
   // ─── Auth gate ──────────────────────────────────────────────────────────────
   if (showLoginPage) {
-    return <LoginPage onLogin={handleLogin} />;
+    return (
+      <Suspense fallback={<LoginSkeleton />}>
+        <LoginPage onLogin={handleLogin} />
+      </Suspense>
+    );
+  }
+
+  // Show skeleton while canvas initializes
+  if (!appReady) {
+    return <AppSkeleton />;
   }
 
   return (
@@ -2342,7 +2355,7 @@ export default function App() {
 
       {/* 3D Interactive Tutorial */}
       {showTutorial && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<AppSkeleton />}>
           <Tutorial3D onClose={() => { setShowTutorial(false); localStorage.setItem('ks-tutorial-done', '1'); }} />
         </Suspense>
       )}
