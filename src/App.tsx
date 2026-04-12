@@ -402,7 +402,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('Draw');
   const [activeModal, setActiveModal] = useState<string | null>(null);
   const [showTutorial, setShowTutorial] = useState(false);
-  const [appReady, setAppReady] = useState(false);
+
   const [activeSidebarPanel, setActiveSidebarPanel] = useState<string | null>(null);
 
   // ─── Theme ───────────────────────────────────────────────────────────────────
@@ -1411,7 +1411,7 @@ export default function App() {
     }
     render();
     // Mark app as ready after first frame
-    requestAnimationFrame(() => setAppReady(true));
+
 
     return () => cancelAnimationFrame(animId);
   }, []);
@@ -1429,13 +1429,6 @@ export default function App() {
     );
   }
   return (
-    <>
-    {/* Skeleton overlay — fades out after first canvas frame */}
-    {!appReady && (
-      <div className="fixed inset-0 z-[200] transition-opacity duration-300">
-        <AppSkeleton />
-      </div>
-    )}
     <div className="bg-[#FAFAFA] text-on-surface h-screen w-screen overflow-hidden relative flex flex-col">
       {/* TopAppBar */}
       <header className="absolute top-0 left-0 w-full flex justify-between items-center px-12 h-20 z-50 bg-transparent border-b border-black/5">
@@ -2400,6 +2393,5 @@ export default function App() {
         </Suspense>
       )}
     </div>
-    </>
   );
 }
