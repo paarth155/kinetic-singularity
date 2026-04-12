@@ -1414,21 +1414,25 @@ export default function App() {
 
 
     return () => cancelAnimationFrame(animId);
-  }, [showLoginPage, authLoading]);
+  }, []);
 
-  // ─── Auth gate ──────────────────────────────────────────────────────────────
-  if (authLoading) {
-    return <LoginSkeleton />;
-  }
-
-  if (showLoginPage) {
-    return (
-      <Suspense fallback={<LoginSkeleton />}>
-        <LoginPage onLogin={handleLogin} />
-      </Suspense>
-    );
-  }
+  // ─── Auth overlays (canvas stays mounted underneath) ─────────────────────
   return (
+    <>
+    {/* Auth loading overlay */}
+    {authLoading && (
+      <div className="fixed inset-0 z-[200]"><LoginSkeleton /></div>
+    )}
+
+    {/* Login page overlay */}
+    {!authLoading && showLoginPage && (
+      <div className="fixed inset-0 z-[200]">
+        <Suspense fallback={<LoginSkeleton />}>
+          <LoginPage onLogin={handleLogin} />
+        </Suspense>
+      </div>
+    )}
+
     <div className="bg-[#FAFAFA] text-on-surface h-screen w-screen overflow-hidden relative flex flex-col">
       {/* TopAppBar */}
       <header className="absolute top-0 left-0 w-full flex justify-between items-center px-12 h-20 z-50 bg-transparent border-b border-black/5">
@@ -2393,5 +2397,6 @@ export default function App() {
         </Suspense>
       )}
     </div>
+    </>
   );
 }
