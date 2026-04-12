@@ -596,6 +596,9 @@ export function useHandTracking(
             drawHUD(smoothedByHand, gestureByHand);
           } else {
             handsRef.current = [];
+            // Reset handedness locks when no hands visible
+            handednessLock.slot0 = { identity: null, disagreementCount: 0 };
+            handednessLock.slot1 = { identity: null, disagreementCount: 0 };
           }
 
           // Soft clear smoothed + history for hands that left the frame (5-frame grace period)
