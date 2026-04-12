@@ -423,8 +423,8 @@ export function useHandTracking(
             const gestureByHand:  Record<string, Gesture>     = {};
 
             // ─── Native Target Classification ───
-            // For front-facing cameras, the raw byte array isn't mirrored at the driver level, so a physical Right Hand 
-            // visually resembles a Left hand to the neural network. We invert the classifier's label to get the true physical hand.
+            // MediaPipe tasks-vision HandLandmarker reports the correct physical hand
+            // for front-facing cameras (no manual inversion needed).
             let currentHandsInfo = results.landmarks.map((rawLm, idx) => {
               const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
               const cy = rawLm.reduce((sum, p) => sum + p.y, 0) / rawLm.length;
@@ -432,9 +432,9 @@ export function useHandTracking(
               // Native Target Classification + Confidence Scoring
               const prediction = results.handednesses?.[idx]?.[0];
               const predictedHand = prediction?.categoryName;
-              // Only trust MediaPipe classifer if it's >90% certain to prevent flickering
+              // Only trust MediaPipe classifier if it's >90% certain to prevent flickering
               const isConfident = prediction && prediction.score > 0.90;
-              const physicalHandTarget = (isConfident && predictedHand === 'Left') ? 'Right' : (isConfident && predictedHand === 'Right') ? 'Left' : null;
+              const physicalHandTarget = isConfident ? predictedHand : null;
 
               return { rawLm, cx, cy, assigned: null as 'Left' | 'Right' | null, physicalHandTarget };
             });
