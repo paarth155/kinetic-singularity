@@ -350,8 +350,17 @@ export default function LoginPage({ onLogin }: Props) {
             {mode === 'login' ? "Don't have an account? Sign Up" : 'Already have an account? Sign In'}
           </button>
 
+          {/* Guest mode */}
+          <button
+            onClick={() => onLogin({ id: `guest-${Date.now()}`, email: '', displayName: 'Guest', isNew: true })}
+            className="w-full py-3 rounded-2xl text-[#727780] text-sm font-space-grotesk transition-all hover:text-[#002746] hover:bg-[#F3F3F3] flex items-center justify-center gap-2 mt-2"
+          >
+            <span className="material-symbols-outlined text-base">person_outline</span>
+            Continue as Guest
+          </button>
+
           {/* Footer */}
-          <p className="text-center text-[10px] text-[#C2C7D0] mt-8 font-space-grotesk tracking-wider">
+          <p className="text-center text-[10px] text-[#C2C7D0] mt-6 font-space-grotesk tracking-wider">
             KINETIC SINGULARITY · AI HAND-GESTURE DRAWING STUDIO
           </p>
         </div>
