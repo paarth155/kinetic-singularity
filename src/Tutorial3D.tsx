@@ -1,54 +1,77 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
-/* ─── Data ─────────────────────────────────────────────────── */
+/* ─── Tutorial Steps — Practical How-To ─────────────────────── */
 const STEPS = [
   {
     id: 'welcome',
     icon: 'waving_hand',
     tag: 'WELCOME',
-    title: 'Welcome to\nKinetic Singularity',
-    body: 'An AI-powered spatial drawing studio where your hand gestures become art. This quick tour will show you how.',
-    image: '/tutorial/gestures.png',
+    title: 'Let\'s learn\nthe basics',
+    body: 'This quick guide will teach you exactly how to use Kinetic Singularity — from hand gestures to exporting your art.',
+    visual: 'intro',
   },
   {
-    id: 'gesture',
-    icon: 'gesture',
-    tag: 'HAND TRACKING',
-    title: 'Draw with\nYour Hands',
-    body: 'Pinch your thumb & index finger to start drawing. Open your hand to stop. Two-finger pinch to zoom & rotate the canvas.',
-    image: '/tutorial/gestures.png',
+    id: 'camera',
+    icon: 'videocam',
+    tag: 'STEP 1 · CAMERA SETUP',
+    title: 'Allow camera\naccess',
+    body: 'When prompted, click "Allow" to enable your webcam. The app uses your camera to track your hands in real-time. Your video stays on your device — nothing is uploaded.',
+    visual: 'camera',
+    tips: ['Ensure good lighting — avoid backlighting', 'Sit 1–2 feet from the camera', 'Keep hands within the camera frame'],
   },
   {
-    id: 'mouse',
-    icon: 'edit',
-    tag: 'MOUSE DRAWING',
-    title: 'Draw with\nMouse & Layers',
-    body: 'Switch to Mouse mode in the sidebar, then click & drag to draw. Organize work across multiple layers — each layer has its own strokes.',
-    image: '/tutorial/drawing.png',
+    id: 'draw-right',
+    icon: 'draw',
+    tag: 'STEP 2 · DRAWING',
+    title: 'Pinch to\ndraw',
+    body: 'Use your RIGHT hand to draw. Pinch your thumb and index finger together to start a stroke. Move your hand while pinching to draw. Release the pinch to stop.',
+    visual: 'pinch',
+    gesture: { hand: '✋ Right Hand', action: 'Thumb + Index Pinch', result: 'Creates strokes on canvas' },
+    tips: ['Keep other fingers open while pinching', 'Move slowly for smooth lines', 'The cursor follows your index fingertip'],
   },
   {
-    id: 'text',
-    icon: 'text_fields',
-    tag: 'TEXT TOOL',
-    title: 'Place Text\non Canvas',
-    body: 'Activate the Text tool, click anywhere on the canvas, type your text and press Enter. Text renders as stylized particle dots.',
-    image: '/tutorial/text.png',
+    id: 'navigate-left',
+    icon: 'open_with',
+    tag: 'STEP 3 · NAVIGATION',
+    title: 'Pan, zoom &\nrotate',
+    body: 'Use your LEFT hand to navigate the canvas. Grab (close fist) to pan. Pinch with two fingers to zoom in/out. Rotate your wrist while grabbing to rotate the canvas.',
+    visual: 'navigate',
+    gesture: { hand: '🤚 Left Hand', action: 'Fist / Two-Finger Pinch', result: 'Pan, zoom, rotate canvas' },
+    tips: ['Fist = drag/pan the canvas', 'Pinch = zoom in and out', 'Open hand = stop navigating'],
   },
   {
-    id: 'assets',
-    icon: 'category',
-    tag: 'ASSET LIBRARY',
-    title: 'Embed Shapes\n& Assets',
-    body: 'Open the Assets tab to browse geometric primitives. Click any shape to embed it on the active layer. Select, resize, and rotate freely.',
-    image: '/tutorial/assets.png',
+    id: 'mouse-mode',
+    icon: 'mouse',
+    tag: 'STEP 4 · MOUSE MODE',
+    title: 'Draw with\nyour mouse',
+    body: 'Click "MOUSE" in the left sidebar to switch to mouse drawing mode. Click and drag on the canvas to draw strokes. Click it again to go back to hand tracking mode.',
+    visual: 'mouse',
+    tips: ['Great for precise, detailed work', 'Works alongside hand tracking', 'Change brush color & size in Brushes panel'],
+  },
+  {
+    id: 'tools',
+    icon: 'construction',
+    tag: 'STEP 5 · TOOLS',
+    title: 'Explore the\ntoolbar',
+    body: 'The left sidebar has all your tools. Here\'s what each one does:',
+    visual: 'tools',
+    toolList: [
+      { icon: 'near_me', name: 'Select', desc: 'Click strokes to select, move, or delete them' },
+      { icon: 'brush', name: 'Brushes', desc: 'Change brush color, thickness, and style' },
+      { icon: 'gesture', name: 'Mouse', desc: 'Toggle mouse drawing mode on/off' },
+      { icon: 'text_fields', name: 'Text', desc: 'Click canvas to place text (renders as dots)' },
+      { icon: 'layers', name: 'Layers', desc: 'Organize your work in separate layers' },
+      { icon: 'upload', name: 'Export', desc: 'Save your art as SVG or PNG' },
+    ],
   },
   {
     id: 'ready',
     icon: 'rocket_launch',
-    tag: 'YOU\'RE READY',
-    title: 'Start Creating',
-    body: 'You know the essentials. Open the Gestures panel for a full cheat-sheet. Now go make something extraordinary.',
-    image: '/tutorial/gestures.png',
+    tag: 'YOU\'RE READY!',
+    title: 'Start\ncreating',
+    body: 'You now know everything you need. Open the Gestures panel anytime for a reminder. The toolbar tutorial icon in your profile menu will bring you back here.',
+    visual: 'ready',
+    tips: ['Press CALIBRATE to reset the canvas', 'Use keyboard shortcuts for speed', 'Your work auto-saves locally'],
   },
 ];
 
@@ -57,7 +80,6 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
   const [step, setStep] = useState(0);
   const [transitioning, setTransitioning] = useState(false);
   const [direction, setDirection] = useState<'next' | 'prev'>('next');
-  const containerRef = useRef<HTMLDivElement>(null);
   const data = STEPS[step];
   const total = STEPS.length;
   const progress = ((step + 1) / total) * 100;
@@ -69,7 +91,7 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
     setTimeout(() => {
       setStep((s) => dir === 'next' ? Math.min(s + 1, total - 1) : Math.max(s - 1, 0));
       setTimeout(() => setTransitioning(false), 50);
-    }, 350);
+    }, 300);
   }, [transitioning, total]);
 
   /* Keyboard navigation */
@@ -90,7 +112,7 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
 
       {/* Floating particles */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        {Array.from({ length: 30 }).map((_, i) => (
+        {Array.from({ length: 20 }).map((_, i) => (
           <div
             key={i}
             className="absolute rounded-full bg-white/10 animate-float-particle"
@@ -106,14 +128,13 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
         ))}
       </div>
 
-      {/* Main Card — 3D perspective container */}
+      {/* Main Card */}
       <div
-        ref={containerRef}
         className="relative z-10 w-[90vw] max-w-5xl"
         style={{ perspective: '1600px' }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Progress bar across the top */}
+        {/* Progress bar */}
         <div className="absolute -top-6 left-0 right-0 h-1 bg-white/10 rounded-full overflow-hidden">
           <div
             className="h-full bg-gradient-to-r from-[#9fcaff] to-white rounded-full transition-all duration-500"
@@ -131,38 +152,74 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
           className="bg-white/95 backdrop-blur-2xl rounded-[2.5rem] shadow-[0_32px_80px_rgba(0,29,54,0.4)] overflow-hidden transition-all duration-500"
           style={{
             transform: transitioning
-              ? `rotateY(${direction === 'next' ? -8 : 8}deg) scale(0.95)`
+              ? `rotateY(${direction === 'next' ? -6 : 6}deg) scale(0.97)`
               : 'rotateY(0deg) scale(1)',
             transformOrigin: direction === 'next' ? 'right center' : 'left center',
           }}
         >
-          <div className="grid grid-cols-1 md:grid-cols-2 min-h-[480px]">
+          <div className="grid grid-cols-1 md:grid-cols-2 min-h-[520px]">
             {/* Left — Content */}
-            <div className="flex flex-col justify-between p-10 md:p-14 relative overflow-hidden">
-              {/* Decorative gradient orb */}
+            <div className="flex flex-col justify-between p-10 md:p-12 relative overflow-hidden">
               <div className="absolute -top-20 -left-20 w-64 h-64 bg-[#D4E4FC] rounded-full blur-3xl opacity-40 pointer-events-none" />
 
-              <div className="relative z-10">
+              <div className="relative z-10 flex-1">
                 {/* Tag pill */}
-                <div className="inline-flex items-center gap-2 bg-[#D4E4FC] text-[#002746] px-4 py-1.5 rounded-full text-[10px] font-bold font-space-grotesk tracking-[0.2em] mb-6">
+                <div className="inline-flex items-center gap-2 bg-[#D4E4FC] text-[#002746] px-4 py-1.5 rounded-full text-[10px] font-bold font-space-grotesk tracking-[0.15em] mb-5">
                   <span className="material-symbols-outlined text-sm">{data.icon}</span>
                   {data.tag}
                 </div>
 
-                {/* Title with line break */}
-                <h2 className="text-3xl md:text-4xl font-bold font-space-grotesk text-[#002746] leading-tight tracking-tight mb-5 whitespace-pre-line">
+                {/* Title */}
+                <h2 className="text-3xl md:text-4xl font-bold font-space-grotesk text-[#002746] leading-tight tracking-tight mb-4 whitespace-pre-line">
                   {data.title}
                 </h2>
 
                 {/* Body */}
-                <p className="text-base text-[#42474F] font-space-grotesk leading-relaxed max-w-sm">
+                <p className="text-[15px] text-[#42474F] font-space-grotesk leading-relaxed max-w-sm mb-5">
                   {data.body}
                 </p>
+
+                {/* Gesture card */}
+                {'gesture' in data && data.gesture && (
+                  <div className="bg-gradient-to-r from-[#D4E4FC] to-[#EEF3F8] rounded-2xl p-4 mb-4">
+                    <div className="flex items-center gap-3 mb-2">
+                      <span className="text-xl">{data.gesture.hand}</span>
+                      <span className="text-sm font-bold font-space-grotesk text-[#002746]">{data.gesture.action}</span>
+                    </div>
+                    <p className="text-xs text-[#42474F] font-space-grotesk pl-9">{data.gesture.result}</p>
+                  </div>
+                )}
+
+                {/* Tool list */}
+                {'toolList' in data && data.toolList && (
+                  <div className="grid grid-cols-2 gap-2">
+                    {data.toolList.map((tool) => (
+                      <div key={tool.name} className="flex items-center gap-2 bg-[#F3F3F3] rounded-xl px-3 py-2">
+                        <span className="material-symbols-outlined text-[#003D6A] text-base">{tool.icon}</span>
+                        <div>
+                          <p className="text-[11px] font-bold font-space-grotesk text-[#002746]">{tool.name}</p>
+                          <p className="text-[9px] text-[#727780] font-space-grotesk leading-tight">{tool.desc}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Tips */}
+                {'tips' in data && data.tips && !('toolList' in data) && (
+                  <div className="space-y-2">
+                    {data.tips.map((tip, i) => (
+                      <div key={i} className="flex items-center gap-2.5 text-sm text-[#42474F] font-space-grotesk">
+                        <span className="w-5 h-5 rounded-full bg-[#D4E4FC] text-[#003D6A] text-[10px] flex items-center justify-center font-bold shrink-0">✓</span>
+                        {tip}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Bottom controls */}
-              <div className="flex items-center justify-between mt-10 relative z-10">
-                {/* Dots */}
+              <div className="flex items-center justify-between mt-6 relative z-10">
                 <div className="flex gap-2">
                   {STEPS.map((_, i) => (
                     <button
@@ -170,13 +227,12 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
                       onClick={() => { setDirection(i > step ? 'next' : 'prev'); setStep(i); }}
                       className={`h-2 rounded-full transition-all duration-300 ${i === step
                         ? 'w-8 bg-[#003D6A]'
-                        : 'w-2 bg-[#C2C7D0] hover:bg-[#003D6A]/40'
+                        : i < step ? 'w-2 bg-[#003D6A]/40' : 'w-2 bg-[#C2C7D0]'
                         }`}
                     />
                   ))}
                 </div>
 
-                {/* Nav buttons */}
                 <div className="flex gap-3">
                   {step > 0 && (
                     <button
@@ -200,41 +256,166 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
                       className="h-11 px-8 rounded-2xl bg-gradient-to-br from-[#002746] to-[#003D6A] text-white font-space-grotesk font-bold text-sm tracking-wider flex items-center gap-2 hover:shadow-[0_4px_20px_rgba(0,39,70,0.4)] transition-all active:scale-95 animate-pulse"
                     >
                       <span className="material-symbols-outlined text-lg">rocket_launch</span>
-                      Get Started
+                      Start Creating
                     </button>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Right — 3D Image showcase */}
-            <div className="relative bg-gradient-to-br from-[#EEF3F8] to-[#D4E4FC]/40 flex items-center justify-center overflow-hidden group">
-              {/* Grid overlay for depth */}
+            {/* Right — Visual demo panel */}
+            <div className="relative bg-gradient-to-br from-[#EEF3F8] to-[#D4E4FC]/40 flex items-center justify-center overflow-hidden p-8">
+              {/* Grid overlay */}
               <div className="absolute inset-0 opacity-[0.04]" style={{
                 backgroundImage: 'linear-gradient(#002746 1px, transparent 1px), linear-gradient(90deg, #002746 1px, transparent 1px)',
                 backgroundSize: '40px 40px',
               }} />
 
-              {/* Floating image with 3D transform */}
               <div
-                className="relative w-[85%] aspect-square transition-all duration-700 ease-out"
+                className="relative w-full max-w-sm transition-all duration-700 ease-out"
                 style={{
                   transform: transitioning
-                    ? `perspective(1200px) rotateY(${direction === 'next' ? 30 : -30}deg) translateZ(-60px) scale(0.8)`
-                    : 'perspective(1200px) rotateY(0deg) translateZ(0px) scale(1)',
+                    ? `translateX(${direction === 'next' ? 40 : -40}px) scale(0.9)`
+                    : 'translateX(0) scale(1)',
                   opacity: transitioning ? 0 : 1,
                 }}
               >
-                <img
-                  src={data.image}
-                  alt={data.tag}
-                  className="w-full h-full object-contain drop-shadow-[0_20px_40px_rgba(0,39,70,0.15)]"
-                />
+                {/* Dynamic visual based on step */}
+                {data.visual === 'intro' && (
+                  <div className="text-center space-y-6">
+                    <div className="w-32 h-32 mx-auto rounded-3xl bg-gradient-to-br from-[#002746] to-[#003D6A] flex items-center justify-center shadow-2xl">
+                      <span className="material-symbols-outlined text-white text-6xl">gesture</span>
+                    </div>
+                    <p className="text-sm text-[#42474F] font-space-grotesk">7 quick steps · ~2 min</p>
+                  </div>
+                )}
+                {data.visual === 'camera' && (
+                  <div className="space-y-4 text-center">
+                    <div className="w-full aspect-video bg-[#002746] rounded-2xl flex items-center justify-center relative overflow-hidden">
+                      <div className="absolute inset-0 bg-gradient-to-br from-[#003D6A]/20 to-transparent" />
+                      <div className="text-center z-10">
+                        <span className="material-symbols-outlined text-white/70 text-5xl mb-2 block">videocam</span>
+                        <p className="text-white/50 text-xs font-space-grotesk">Camera preview</p>
+                      </div>
+                      <div className="absolute bottom-3 right-3 w-3 h-3 rounded-full bg-green-400 animate-pulse" />
+                    </div>
+                    <div className="flex items-center justify-center gap-2 text-[#003D6A]">
+                      <span className="material-symbols-outlined text-base">shield</span>
+                      <span className="text-xs font-space-grotesk">100% private · processed locally</span>
+                    </div>
+                  </div>
+                )}
+                {data.visual === 'pinch' && (
+                  <div className="space-y-6">
+                    <div className="bg-white rounded-2xl p-6 shadow-lg">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-4xl">👌</span>
+                        <span className="material-symbols-outlined text-[#003D6A] text-3xl animate-pulse">arrow_forward</span>
+                        <div className="w-16 h-1 bg-gradient-to-r from-[#003D6A] to-[#9fcaff] rounded-full" />
+                      </div>
+                      <p className="text-sm font-bold text-[#002746] font-space-grotesk">Pinch = Draw</p>
+                      <p className="text-xs text-[#727780] font-space-grotesk mt-1">Thumb touches index finger</p>
+                    </div>
+                    <div className="bg-white rounded-2xl p-6 shadow-lg">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-4xl">🖐️</span>
+                        <span className="material-symbols-outlined text-[#C2C7D0] text-3xl">block</span>
+                        <div className="w-16 h-1 bg-[#C2C7D0] rounded-full opacity-30" />
+                      </div>
+                      <p className="text-sm font-bold text-[#002746] font-space-grotesk">Open = Stop</p>
+                      <p className="text-xs text-[#727780] font-space-grotesk mt-1">Spread fingers to stop drawing</p>
+                    </div>
+                  </div>
+                )}
+                {data.visual === 'navigate' && (
+                  <div className="space-y-4">
+                    <div className="bg-white rounded-2xl p-5 shadow-lg flex items-center gap-4">
+                      <span className="text-3xl">✊</span>
+                      <div>
+                        <p className="text-sm font-bold text-[#002746] font-space-grotesk">Grab = Pan</p>
+                        <p className="text-xs text-[#727780] font-space-grotesk">Close fist, move to drag canvas</p>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-2xl p-5 shadow-lg flex items-center gap-4">
+                      <span className="text-3xl">🤏</span>
+                      <div>
+                        <p className="text-sm font-bold text-[#002746] font-space-grotesk">Pinch = Zoom</p>
+                        <p className="text-xs text-[#727780] font-space-grotesk">Two-finger pinch to zoom in/out</p>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-2xl p-5 shadow-lg flex items-center gap-4">
+                      <span className="text-3xl">🔄</span>
+                      <div>
+                        <p className="text-sm font-bold text-[#002746] font-space-grotesk">Rotate = Turn</p>
+                        <p className="text-xs text-[#727780] font-space-grotesk">Twist wrist while grabbing</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {data.visual === 'mouse' && (
+                  <div className="space-y-4 text-center">
+                    <div className="bg-white rounded-2xl p-6 shadow-lg inline-block">
+                      <div className="flex items-center gap-3 mb-4">
+                        <div className="w-12 h-12 rounded-xl bg-[#003D6A] flex items-center justify-center">
+                          <span className="material-symbols-outlined text-white text-2xl">gesture</span>
+                        </div>
+                        <span className="material-symbols-outlined text-[#C2C7D0]">swap_horiz</span>
+                        <div className="w-12 h-12 rounded-xl bg-[#003D6A] flex items-center justify-center">
+                          <span className="material-symbols-outlined text-white text-2xl">mouse</span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-[#727780] font-space-grotesk">Click sidebar to toggle</p>
+                    </div>
+                    <div className="bg-white rounded-2xl p-4 shadow-lg text-left">
+                      <p className="text-sm font-bold text-[#002746] font-space-grotesk mb-2">Mouse Drawing:</p>
+                      <div className="space-y-1.5 text-xs text-[#42474F] font-space-grotesk">
+                        <p>• Click + drag = draw stroke</p>
+                        <p>• Crosshair cursor shows when active</p>
+                        <p>• Use Brushes panel for colors</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {data.visual === 'tools' && (
+                  <div className="bg-white rounded-2xl p-4 shadow-lg">
+                    <div className="flex items-center gap-2 mb-3 pb-3 border-b border-black/5">
+                      <span className="material-symbols-outlined text-[#003D6A]">dashboard</span>
+                      <span className="text-sm font-bold font-space-grotesk text-[#002746]">Sidebar Overview</span>
+                    </div>
+                    <div className="space-y-1">
+                      {[
+                        { icon: 'near_me', label: 'Select' },
+                        { icon: 'brush', label: 'Brushes' },
+                        { icon: 'gesture', label: 'Mouse' },
+                        { icon: 'text_fields', label: 'Text' },
+                        { icon: 'pan_tool', label: 'Gestures' },
+                        { icon: 'layers', label: 'Depth' },
+                        { icon: 'upload', label: 'Export' },
+                      ].map((item) => (
+                        <div key={item.label} className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-[#F3F3F3] transition-colors">
+                          <span className="material-symbols-outlined text-[#003D6A] text-base">{item.icon}</span>
+                          <span className="text-sm font-space-grotesk text-[#42474F]">{item.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {data.visual === 'ready' && (
+                  <div className="text-center space-y-6">
+                    <div className="w-32 h-32 mx-auto rounded-full bg-gradient-to-br from-[#002746] to-[#003D6A] flex items-center justify-center shadow-2xl animate-pulse">
+                      <span className="material-symbols-outlined text-white text-6xl">rocket_launch</span>
+                    </div>
+                    <div>
+                      <p className="text-lg font-bold text-[#002746] font-space-grotesk">You're all set!</p>
+                      <p className="text-sm text-[#727780] font-space-grotesk mt-1">Time to create something amazing</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Decorative rings */}
-              <div className="absolute top-8 right-8 w-24 h-24 border border-[#003D6A]/10 rounded-full pointer-events-none group-hover:scale-125 transition-transform duration-700" />
-              <div className="absolute bottom-12 left-8 w-16 h-16 border border-[#003D6A]/10 rounded-full pointer-events-none group-hover:scale-125 transition-transform duration-700 delay-100" />
+              <div className="absolute top-8 right-8 w-24 h-24 border border-[#003D6A]/10 rounded-full pointer-events-none" />
+              <div className="absolute bottom-12 left-8 w-16 h-16 border border-[#003D6A]/10 rounded-full pointer-events-none" />
             </div>
           </div>
         </div>

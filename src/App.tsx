@@ -185,6 +185,10 @@ export default function App() {
           isNew: false,
         });
         setShowLoginPage(false);
+        // Auto-show tutorial if user never completed it
+        if (!localStorage.getItem('ks-tutorial-done')) {
+          setShowTutorial(true);
+        }
       }
       setAuthLoading(false);
     };
@@ -200,6 +204,10 @@ export default function App() {
           isNew: false,
         });
         setShowLoginPage(false);
+        // Auto-show tutorial for first-time users
+        if (!localStorage.getItem('ks-tutorial-done')) {
+          setShowTutorial(true);
+        }
       } else {
         setAuthUser(null);
         setShowLoginPage(true);
@@ -212,7 +220,7 @@ export default function App() {
   const handleLogin = useCallback((user: AuthUser) => {
     setAuthUser(user);
     setShowLoginPage(false);
-    if (user.isNew) {
+    if (user.isNew || !localStorage.getItem('ks-tutorial-done')) {
       localStorage.removeItem('ks-tutorial-done');
       setShowTutorial(true);
     }
