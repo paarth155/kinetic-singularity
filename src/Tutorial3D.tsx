@@ -23,11 +23,11 @@ const STEPS = [
     id: 'draw-right',
     icon: 'draw',
     tag: 'STEP 2 · DRAWING',
-    title: 'Pinch to\ndraw',
-    body: 'Use your RIGHT hand to draw. Pinch your thumb and index finger together to start a stroke. Move your hand while pinching to draw. Release the pinch to stop.',
+    title: 'Point to\ndraw',
+    body: 'Use your RIGHT hand to draw. Point your index finger to start a stroke — the cursor follows your fingertip. Move your hand to draw. Close your fist or open all fingers to stop.',
     visual: 'pinch',
-    gesture: { hand: '✋ Right Hand', action: 'Thumb + Index Pinch', result: 'Creates strokes on canvas' },
-    tips: ['Keep other fingers open while pinching', 'Move slowly for smooth lines', 'The cursor follows your index fingertip'],
+    gesture: { hand: '✋ Right Hand', action: 'Point Index Finger', result: 'Creates strokes on canvas' },
+    tips: ['Point only your index finger to draw', 'Move slowly for smooth lines', 'Open hand or fist = stop drawing'],
   },
   {
     id: 'navigate-left',
@@ -309,12 +309,12 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
                   <div className="space-y-6">
                     <div className="bg-white rounded-2xl p-6 shadow-lg">
                       <div className="flex items-center justify-between mb-4">
-                        <span className="text-4xl">👌</span>
+                        <span className="text-4xl">☝️</span>
                         <span className="material-symbols-outlined text-[#003D6A] text-3xl animate-pulse">arrow_forward</span>
                         <div className="w-16 h-1 bg-gradient-to-r from-[#003D6A] to-[#9fcaff] rounded-full" />
                       </div>
-                      <p className="text-sm font-bold text-[#002746] font-space-grotesk">Pinch = Draw</p>
-                      <p className="text-xs text-[#727780] font-space-grotesk mt-1">Thumb touches index finger</p>
+                      <p className="text-sm font-bold text-[#002746] font-space-grotesk">Point = Draw</p>
+                      <p className="text-xs text-[#727780] font-space-grotesk mt-1">Extend index finger, curl others</p>
                     </div>
                     <div className="bg-white rounded-2xl p-6 shadow-lg">
                       <div className="flex items-center justify-between mb-4">
@@ -322,8 +322,8 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
                         <span className="material-symbols-outlined text-[#C2C7D0] text-3xl">block</span>
                         <div className="w-16 h-1 bg-[#C2C7D0] rounded-full opacity-30" />
                       </div>
-                      <p className="text-sm font-bold text-[#002746] font-space-grotesk">Open = Stop</p>
-                      <p className="text-xs text-[#727780] font-space-grotesk mt-1">Spread fingers to stop drawing</p>
+                      <p className="text-sm font-bold text-[#002746] font-space-grotesk">Open / Fist = Stop</p>
+                      <p className="text-xs text-[#727780] font-space-grotesk mt-1">Open hand or close fist to stop</p>
                     </div>
                   </div>
                 )}
