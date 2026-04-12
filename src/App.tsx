@@ -634,42 +634,18 @@ export default function App() {
              targetCtx.stroke();
            }
         } else {
-           // ── Layer 0: Ambient glow — single batched path (1 GPU draw call instead of N) ──
-           // shadowBlur on N tiny segments is the #1 Canvas2D perf killer; batch it.
+           // ── Single merged layer: glow + body in one GPU pass ──
            {
              targetCtx.save();
              targetCtx.strokeStyle = stroke.color;
              targetCtx.shadowColor = stroke.color;
-             targetCtx.shadowBlur = 18 * birthEase;
-             targetCtx.lineWidth = baseThickness * 1.5;
-             targetCtx.globalAlpha = 0.45 * birthEase;
+             targetCtx.shadowBlur = 12 * birthEase;
+             targetCtx.globalAlpha = 0.9 * birthEase;
              targetCtx.lineCap = 'round';
              targetCtx.lineJoin = 'round';
-             targetCtx.beginPath();
-             targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
-             for (let i = 1; i < stroke.points.length - 1; i++) {
-               const ni = i + 1 < stroke.points.length ? i + 1 : i;
-               targetCtx.quadraticCurveTo(
-                 stroke.points[i].x, stroke.points[i].y,
-                 (stroke.points[i].x + stroke.points[ni].x) / 2,
-                 (stroke.points[i].y + stroke.points[ni].y) / 2
-               );
-             }
-             targetCtx.stroke();
-             targetCtx.restore();
-           }
-
-           // ── Layer 1: Main body — batched path for performance ──
-           {
-             targetCtx.save();
-             targetCtx.strokeStyle = stroke.color;
-             targetCtx.shadowColor = stroke.color;
-             targetCtx.shadowBlur = 8 * birthEase;
-             targetCtx.globalAlpha = 0.85 * birthEase;
-             targetCtx.lineCap = 'round';
-             targetCtx.lineJoin = 'round';
-             // Use average thickness for the whole stroke (batched = 1 GPU call vs N)
-             const avgThick = stroke.points.reduce((sum, p) => sum + (p.z ?? baseThickness), 0) / stroke.points.length;
+             const avgThick = stroke.points.length > 20
+               ? stroke.points.reduce((sum, p) => sum + (p.z ?? baseThickness), 0) / stroke.points.length
+               : baseThickness;
              targetCtx.lineWidth = avgThick;
              targetCtx.beginPath();
              targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
@@ -876,10 +852,9 @@ export default function App() {
                   const dynamicThickness = brushThicknessRef.current * (0.6 + zNorm * 0.8);
                   activeStroke.points.push({ x: worldX, y: worldY, z: dynamicThickness });
                   // ── Live decimation: keep point count manageable for long strokes ──
-                  // When stroke exceeds 200 points, decimate the older portion (keep last 30 fresh)
-                  if (activeStroke.points.length > 200) {
-                    const fresh = activeStroke.points.slice(-30);
-                    const older = activeStroke.points.slice(0, -30);
+                  if (activeStroke.points.length > 120) {
+                    const fresh = activeStroke.points.slice(-20);
+                    const older = activeStroke.points.slice(0, -20);
                     // Keep every 3rd point from the older region
                     const thinned = older.filter((_, i) => i % 3 === 0);
                     activeStroke.points = [...thinned, ...fresh];
@@ -1873,9 +1848,9 @@ export default function App() {
               if (Math.hypot(prevPt.x - worldPt.x, prevPt.y - worldPt.y) > 1.5) {
                 stroke.points.push({ x: worldPt.x, y: worldPt.y });
                 // Live decimation for long mouse strokes
-                if (stroke.points.length > 200) {
-                  const fresh = stroke.points.slice(-30);
-                  const older = stroke.points.slice(0, -30);
+                if (stroke.points.length > 120) {
+                  const fresh = stroke.points.slice(-20);
+                  const older = stroke.points.slice(0, -20);
                   stroke.points = [...older.filter((_, i) => i % 3 === 0), ...fresh];
                 }
                 const b = stroke.bounds;
