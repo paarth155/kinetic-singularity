@@ -34,10 +34,10 @@ const STEPS = [
     icon: 'open_with',
     tag: 'STEP 3 · NAVIGATION',
     title: 'Pan, zoom &\nrotate',
-    body: 'Use your LEFT hand to navigate the canvas. Grab (close fist) to pan. Pinch with two fingers to zoom in/out. Rotate your wrist while grabbing to rotate the canvas.',
+    body: 'Use your LEFT hand to navigate the canvas. Make a peace sign (✌️) to pan/move the canvas around. Pinch with two fingers to zoom in/out.',
     visual: 'navigate',
-    gesture: { hand: '🤚 Left Hand', action: 'Fist / Two-Finger Pinch', result: 'Pan, zoom, rotate canvas' },
-    tips: ['Fist = drag/pan the canvas', 'Pinch = zoom in and out', 'Open hand = stop navigating'],
+    gesture: { hand: '🤚 Left Hand', action: 'Peace Sign (✌️)', result: 'Pan and move the canvas' },
+    tips: ['Peace sign = drag/pan the canvas', 'Pinch = zoom in and out', 'Open hand = stop navigating'],
   },
   {
     id: 'mouse-mode',
@@ -330,10 +330,10 @@ export default function Tutorial3D({ onClose }: { onClose: () => void }) {
                 {data.visual === 'navigate' && (
                   <div className="space-y-4">
                     <div className="bg-white rounded-2xl p-5 shadow-lg flex items-center gap-4">
-                      <span className="text-3xl">✊</span>
+                      <span className="text-3xl">✌️</span>
                       <div>
-                        <p className="text-sm font-bold text-[#002746] font-space-grotesk">Grab = Pan</p>
-                        <p className="text-xs text-[#727780] font-space-grotesk">Close fist, move to drag canvas</p>
+                        <p className="text-sm font-bold text-[#002746] font-space-grotesk">Peace Sign = Pan</p>
+                        <p className="text-xs text-[#727780] font-space-grotesk">Two fingers up, move to drag canvas</p>
                       </div>
                     </div>
                     <div className="bg-white rounded-2xl p-5 shadow-lg flex items-center gap-4">
