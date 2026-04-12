@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useCallback, lazy, Suspense } from 'react';
 import { useHandTracking, type HandTrackingConfig } from './useHandTracking';
+import { supabase } from './lib/supabase';
 import LoginPage, { type AuthUser } from './LoginPage';
 import { AppSkeleton, LoginSkeleton } from './Skeletons';
 const Tutorial3D = lazy(() => import('./Tutorial3D'));
@@ -167,24 +168,58 @@ function DepthPanel({ brushThicknessRef }: { brushThicknessRef: React.MutableRef
 }
 
 export default function App() {
-  // ─── Auth state ─────────────────────────────────────────────────────────────
-  const [authUser, setAuthUser] = useState<AuthUser | null>(() => {
-    try { const s = localStorage.getItem('ks-session'); return s ? JSON.parse(s) : null; } catch { return null; }
-  });
-  const [showLoginPage, setShowLoginPage] = useState(!localStorage.getItem('ks-session'));
+  // ─── Auth state (Supabase) ──────────────────────────────────────────────────
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [showLoginPage, setShowLoginPage] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
 
-  const handleLogin = useCallback((user: AuthUser, isNewUser: boolean) => {
+  // Check for existing Supabase session on mount
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        setAuthUser({
+          id: session.user.id,
+          email: session.user.email || '',
+          displayName: session.user.user_metadata?.display_name || session.user.email?.split('@')[0] || 'User',
+          isNew: false,
+        });
+        setShowLoginPage(false);
+      }
+      setAuthLoading(false);
+    };
+    checkSession();
+
+    // Listen for auth state changes (sign in, sign out, token refresh)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setAuthUser({
+          id: session.user.id,
+          email: session.user.email || '',
+          displayName: session.user.user_metadata?.display_name || session.user.email?.split('@')[0] || 'User',
+          isNew: false,
+        });
+        setShowLoginPage(false);
+      } else {
+        setAuthUser(null);
+        setShowLoginPage(true);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleLogin = useCallback((user: AuthUser) => {
     setAuthUser(user);
     setShowLoginPage(false);
-    if (isNewUser) {
-      // Clear old tutorial flag so new user always sees it
+    if (user.isNew) {
       localStorage.removeItem('ks-tutorial-done');
       setShowTutorial(true);
     }
   }, []);
 
-  const handleLogout = useCallback(() => {
-    localStorage.removeItem('ks-session');
+  const handleLogout = useCallback(async () => {
+    await supabase.auth.signOut();
     setAuthUser(null);
     setShowLoginPage(true);
   }, []);
@@ -1382,6 +1417,10 @@ export default function App() {
   }, []);
 
   // ─── Auth gate ──────────────────────────────────────────────────────────────
+  if (authLoading) {
+    return <LoginSkeleton />;
+  }
+
   if (showLoginPage) {
     return (
       <Suspense fallback={<LoginSkeleton />}>
@@ -1434,7 +1473,7 @@ export default function App() {
             <div className="absolute right-0 top-12 w-52 bg-white/95 backdrop-blur-xl border border-[#C2C7D0]/20 rounded-2xl shadow-[0_8px_32px_rgba(0,39,70,0.12)] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 p-2">
               <div className="px-3 py-2 border-b border-black/5 mb-1">
                 <p className="text-sm font-semibold text-[#002746] font-space-grotesk truncate">{authUser?.displayName}</p>
-                <p className="text-[10px] text-[#727780] font-space-grotesk">@{authUser?.username}</p>
+                <p className="text-[10px] text-[#727780] font-space-grotesk truncate">{authUser?.email}</p>
               </div>
               <button onClick={() => setShowTutorial(true)} className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-[#42474F] hover:bg-[#F3F3F3] rounded-xl transition-colors font-space-grotesk">
                 <span className="material-symbols-outlined text-base">school</span>

@@ -1,39 +1,23 @@
 import { useState, useRef, useEffect } from 'react';
+import { supabase } from './lib/supabase';
+import type { User } from '@supabase/supabase-js';
 
 /* ─── Types ────────────────────────────────────────────────── */
 export type AuthUser = {
-  username: string;
+  id: string;
+  email: string;
   displayName: string;
-  createdAt: number;
+  isNew: boolean;
 };
 
 type Props = {
-  onLogin: (user: AuthUser, isNewUser: boolean) => void;
+  onLogin: (user: AuthUser) => void;
 };
-
-/* ─── Helpers ──────────────────────────────────────────────── */
-const USERS_KEY = 'ks-users';
-const SESSION_KEY = 'ks-session';
-
-function getUsers(): Record<string, { passwordHash: string; displayName: string; createdAt: number }> {
-  try { return JSON.parse(localStorage.getItem(USERS_KEY) || '{}'); } catch { return {}; }
-}
-
-function saveUsers(users: Record<string, { passwordHash: string; displayName: string; createdAt: number }>) {
-  localStorage.setItem(USERS_KEY, JSON.stringify(users));
-}
-
-// Simple hash — NOT cryptographically secure, just for local demo
-async function hashPassword(pw: string): Promise<string> {
-  const enc = new TextEncoder().encode(pw);
-  const buf = await crypto.subtle.digest('SHA-256', enc);
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
 
 /* ─── Component ────────────────────────────────────────────── */
 export default function LoginPage({ onLogin }: Props) {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -44,31 +28,59 @@ export default function LoginPage({ onLogin }: Props) {
   useEffect(() => { setMounted(true); inputRef.current?.focus(); }, []);
   useEffect(() => { setError(''); }, [mode]);
 
+  const mapUser = (user: User, isNew: boolean): AuthUser => ({
+    id: user.id,
+    email: user.email || '',
+    displayName: user.user_metadata?.display_name || user.email?.split('@')[0] || 'User',
+    isNew,
+  });
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!username.trim() || !password.trim()) { setError('All fields are required'); return; }
+    if (!email.trim() || !password.trim()) { setError('All fields are required'); return; }
     if (mode === 'signup' && !displayName.trim()) { setError('Display name is required'); return; }
-    if (password.length < 4) { setError('Password must be at least 4 characters'); return; }
+    if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
 
     setLoading(true);
-    const hash = await hashPassword(password);
-    const users = getUsers();
 
-    if (mode === 'signup') {
-      if (users[username.toLowerCase()]) { setError('Username already taken'); setLoading(false); return; }
-      const user = { passwordHash: hash, displayName: displayName.trim(), createdAt: Date.now() };
-      users[username.toLowerCase()] = user;
-      saveUsers(users);
-      const authUser: AuthUser = { username: username.toLowerCase(), displayName: user.displayName, createdAt: user.createdAt };
-      localStorage.setItem(SESSION_KEY, JSON.stringify(authUser));
-      setTimeout(() => onLogin(authUser, true), 400);
-    } else {
-      const stored = users[username.toLowerCase()];
-      if (!stored || stored.passwordHash !== hash) { setError('Invalid username or password'); setLoading(false); return; }
-      const authUser: AuthUser = { username: username.toLowerCase(), displayName: stored.displayName, createdAt: stored.createdAt };
-      localStorage.setItem(SESSION_KEY, JSON.stringify(authUser));
-      setTimeout(() => onLogin(authUser, false), 400);
+    try {
+      if (mode === 'signup') {
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: {
+            data: { display_name: displayName.trim() },
+          },
+        });
+
+        if (signUpError) { setError(signUpError.message); setLoading(false); return; }
+        if (!data.user) { setError('Signup failed. Please try again.'); setLoading(false); return; }
+
+        // Check if email confirmation is required
+        if (data.session) {
+          // Auto-confirmed — proceed directly
+          onLogin(mapUser(data.user, true));
+        } else {
+          // Email confirmation needed
+          setError('Check your email for a confirmation link, then sign in.');
+          setMode('login');
+          setLoading(false);
+        }
+      } else {
+        const { data, error: signInError } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+
+        if (signInError) { setError(signInError.message); setLoading(false); return; }
+        if (!data.user) { setError('Login failed. Please try again.'); setLoading(false); return; }
+
+        onLogin(mapUser(data.user, false));
+      }
+    } catch (err) {
+      setError('Network error. Please check your connection.');
+      setLoading(false);
     }
   };
 
@@ -108,7 +120,7 @@ export default function LoginPage({ onLogin }: Props) {
             </p>
           </div>
 
-          {/* Testimonial / Feature pills */}
+          {/* Feature pills */}
           <div className="flex gap-3 flex-wrap">
             {['Hand Tracking', 'Multi-Layer', 'Real-time', 'Export SVG'].map((f) => (
               <span key={f} className="px-4 py-2 rounded-full bg-white/5 border border-white/10 text-white/40 text-xs font-space-grotesk tracking-wider backdrop-blur-sm">
@@ -168,17 +180,17 @@ export default function LoginPage({ onLogin }: Props) {
 
             <div>
               <label className="block text-xs font-semibold font-space-grotesk text-[#002746] mb-1.5 tracking-wider uppercase">
-                Username
+                Email
               </label>
               <div className="relative">
-                <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-[#C2C7D0] text-lg">alternate_email</span>
+                <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-[#C2C7D0] text-lg">mail</span>
                 <input
                   ref={inputRef}
-                  type="text"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="your_username"
-                  autoComplete="username"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
                   className="w-full bg-white border border-[#C2C7D0]/40 focus:border-[#003D6A] rounded-2xl pl-11 pr-4 py-3.5 text-sm text-[#002746] font-space-grotesk outline-none transition-all focus:shadow-[0_0_0_3px_rgba(0,61,106,0.1)]"
                 />
               </div>
@@ -201,10 +213,16 @@ export default function LoginPage({ onLogin }: Props) {
               </div>
             </div>
 
-            {/* Error */}
+            {/* Error / Info */}
             {error && (
-              <div className="flex items-center gap-2 text-sm text-[#ba1a1a] bg-[#ffdad6] px-4 py-2.5 rounded-xl font-space-grotesk">
-                <span className="material-symbols-outlined text-base">error</span>
+              <div className={`flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl font-space-grotesk ${
+                error.includes('Check your email')
+                  ? 'text-[#003D6A] bg-[#D4E4FC]'
+                  : 'text-[#ba1a1a] bg-[#ffdad6]'
+              }`}>
+                <span className="material-symbols-outlined text-base">
+                  {error.includes('Check your email') ? 'mark_email_read' : 'error'}
+                </span>
                 {error}
               </div>
             )}
