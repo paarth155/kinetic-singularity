@@ -1414,7 +1414,7 @@ export default function App() {
 
 
     return () => cancelAnimationFrame(animId);
-  }, []);
+  }, [showLoginPage, authLoading]);
 
   // ─── Auth gate ──────────────────────────────────────────────────────────────
   if (authLoading) {
