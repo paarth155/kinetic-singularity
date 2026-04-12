@@ -659,48 +659,29 @@ export default function App() {
              targetCtx.restore();
            }
 
-           // ── Layer 1: Main body — per-segment for dynamic pressure width ──
+           // ── Layer 1: Main body — batched path for performance ──
            {
              targetCtx.save();
              targetCtx.strokeStyle = stroke.color;
              targetCtx.shadowColor = stroke.color;
              targetCtx.shadowBlur = 8 * birthEase;
              targetCtx.globalAlpha = 0.85 * birthEase;
-             let prevPoint = stroke.points[0];
-             let i = 1;
-             for (; i < stroke.points.length - 2; i++) {
-               const p1 = stroke.points[i];
-               const p2 = stroke.points[i + 1];
-               const xc = (p1.x + p2.x) / 2;
-               const yc = (p1.y + p2.y) / 2;
-               const dist = Math.hypot(p1.x - prevPoint.x, p1.y - prevPoint.y);
-               const speedFactor = Math.min(1, Math.max(0, dist / 40));
-               const thicknessScale = 1.0 - speedFactor * 0.7;
-               const zThick = (p1.z !== undefined || prevPoint.z !== undefined)
-                 ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
-                 : baseThickness;
-               targetCtx.beginPath();
-               targetCtx.moveTo(prevPoint.x, prevPoint.y);
-               targetCtx.quadraticCurveTo(p1.x, p1.y, xc, yc);
-               targetCtx.lineWidth = zThick * thicknessScale;
-               targetCtx.stroke();
-               prevPoint = { x: xc, y: yc, z: p1.z };
+             targetCtx.lineCap = 'round';
+             targetCtx.lineJoin = 'round';
+             // Use average thickness for the whole stroke (batched = 1 GPU call vs N)
+             const avgThick = stroke.points.reduce((sum, p) => sum + (p.z ?? baseThickness), 0) / stroke.points.length;
+             targetCtx.lineWidth = avgThick;
+             targetCtx.beginPath();
+             targetCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+             for (let i = 1; i < stroke.points.length - 1; i++) {
+               const ni = i + 1 < stroke.points.length ? i + 1 : i;
+               targetCtx.quadraticCurveTo(
+                 stroke.points[i].x, stroke.points[i].y,
+                 (stroke.points[i].x + stroke.points[ni].x) / 2,
+                 (stroke.points[i].y + stroke.points[ni].y) / 2
+               );
              }
-             // Final tail segment
-             if (i < stroke.points.length) {
-               const p1 = stroke.points[i];
-               const p2 = stroke.points[i + 1] ?? p1;
-               const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-               const thicknessScale = 1.0 - Math.min(1, Math.max(0, dist / 40)) * 0.7;
-               const tailZThick = (p1.z !== undefined || prevPoint.z !== undefined)
-                 ? ((p1.z ?? baseThickness) + (prevPoint.z ?? baseThickness)) / 2
-                 : baseThickness;
-               targetCtx.beginPath();
-               targetCtx.moveTo(prevPoint.x, prevPoint.y);
-               targetCtx.quadraticCurveTo(p1.x, p1.y, p2.x, p2.y);
-               targetCtx.lineWidth = tailZThick * thicknessScale;
-               targetCtx.stroke();
-             }
+             targetCtx.stroke();
              targetCtx.restore();
            }
 
@@ -894,6 +875,15 @@ export default function App() {
                   const zNorm = Math.max(0, Math.min(1, (-rawZ + 0.1) / 0.3));
                   const dynamicThickness = brushThicknessRef.current * (0.6 + zNorm * 0.8);
                   activeStroke.points.push({ x: worldX, y: worldY, z: dynamicThickness });
+                  // ── Live decimation: keep point count manageable for long strokes ──
+                  // When stroke exceeds 200 points, decimate the older portion (keep last 30 fresh)
+                  if (activeStroke.points.length > 200) {
+                    const fresh = activeStroke.points.slice(-30);
+                    const older = activeStroke.points.slice(0, -30);
+                    // Keep every 3rd point from the older region
+                    const thinned = older.filter((_, i) => i % 3 === 0);
+                    activeStroke.points = [...thinned, ...fresh];
+                  }
                   // Expand bounds live so renderStroke shows correct bounding box
                   const b = activeStroke.bounds;
                   if (worldX < b.minX) b.minX = worldX;
@@ -1882,6 +1872,12 @@ export default function App() {
               const prevPt = stroke.points[stroke.points.length - 1];
               if (Math.hypot(prevPt.x - worldPt.x, prevPt.y - worldPt.y) > 1.5) {
                 stroke.points.push({ x: worldPt.x, y: worldPt.y });
+                // Live decimation for long mouse strokes
+                if (stroke.points.length > 200) {
+                  const fresh = stroke.points.slice(-30);
+                  const older = stroke.points.slice(0, -30);
+                  stroke.points = [...older.filter((_, i) => i % 3 === 0), ...fresh];
+                }
                 const b = stroke.bounds;
                 if (worldPt.x < b.minX) b.minX = worldPt.x;
                 if (worldPt.y < b.minY) b.minY = worldPt.y;
