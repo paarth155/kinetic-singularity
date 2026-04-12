@@ -423,18 +423,21 @@ export function useHandTracking(
             const gestureByHand:  Record<string, Gesture>     = {};
 
             // ─── Native Target Classification ───
-            // MediaPipe tasks-vision HandLandmarker reports the correct physical hand
-            // for front-facing cameras (no manual inversion needed).
+            // MediaPipe HandLandmarker assumes input is MIRRORED (selfie camera),
+            // but getUserMedia sends RAW UNMIRRORED frames. So MediaPipe's labels
+            // are inverted: it reports "Left" for what is actually the user's Right hand.
+            // We swap the label to get the correct physical hand.
             let currentHandsInfo = results.landmarks.map((rawLm, idx) => {
               const cx = rawLm.reduce((sum, p) => sum + p.x, 0) / rawLm.length;
               const cy = rawLm.reduce((sum, p) => sum + p.y, 0) / rawLm.length;
               
-              // Native Target Classification + Confidence Scoring
               const prediction = results.handednesses?.[idx]?.[0];
               const predictedHand = prediction?.categoryName;
-              // Only trust MediaPipe classifier if it's >90% certain to prevent flickering
-              const isConfident = prediction && prediction.score > 0.90;
-              const physicalHandTarget = isConfident ? predictedHand : null;
+              const confidence = prediction?.score ?? 0;
+              // Invert the label: MediaPipe says "Left" → actually "Right" (and vice versa)
+              const invertedHand = predictedHand === 'Left' ? 'Right' : predictedHand === 'Right' ? 'Left' : null;
+              // Trust classifier if confidence > 70% 
+              const physicalHandTarget = confidence > 0.70 ? invertedHand : null;
 
               return { rawLm, cx, cy, assigned: null as 'Left' | 'Right' | null, physicalHandTarget };
             });
@@ -472,25 +475,32 @@ export function useHandTracking(
             if (unassigned.length > 0) {
                if (unassigned.length === 1) {
                  const info = unassigned[0];
-                 // Single hand detected.
-                 // If the classifier is absolutely sure, use its label.
+                 // Single hand: use inverted classifier label if confident
                  if (info.physicalHandTarget && !assignedStatus[info.physicalHandTarget as 'Left' | 'Right']) {
                    info.assigned = info.physicalHandTarget as 'Left' | 'Right';
                    assignedStatus[info.physicalHandTarget as 'Left' | 'Right'] = true;
                  } else {
-                   // Fallback logic when MediaPipe is unsure (< 90% confidence):
-                   // If ONLY ONE specific hand is NOT ON SCREEN yet from recent history, it claims that identity.
-                   if (!assignedStatus.Right && !smoothed['Left']) {
-                     info.assigned = 'Right';
-                   } else if (!assignedStatus.Left) {
-                     info.assigned = 'Left';
-                   } else if (!assignedStatus.Right) {
-                     info.assigned = 'Right';
+                   // Fallback: in raw unmirrored frame, lowest X = user's right hand
+                   // (their right hand appears on the left side of the raw image)
+                   if (info.cx < 0.5) {
+                     // Hand on left side of raw frame = user's Right hand
+                     if (!assignedStatus.Right) {
+                       info.assigned = 'Right';
+                     } else if (!assignedStatus.Left) {
+                       info.assigned = 'Left';
+                     }
+                   } else {
+                     // Hand on right side of raw frame = user's Left hand
+                     if (!assignedStatus.Left) {
+                       info.assigned = 'Left';
+                     } else if (!assignedStatus.Right) {
+                       info.assigned = 'Right';
+                     }
                    }
                  }
                } else if (unassigned.length >= 2) {
-                 // Two hands entered simultaneously or are both unassigned.
-                 // Lowest X = physical Right hand, next = physical Left hand. Math is absolute!
+                 // Two hands: sort by X — in raw unmirrored frame,
+                 // lowest X = user's Right hand, highest X = user's Left hand
                  unassigned.sort((a, b) => a.cx - b.cx);
                  
                  if (!assignedStatus.Right) {
