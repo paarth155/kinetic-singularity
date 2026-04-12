@@ -412,6 +412,7 @@ export default function App() {
   const [showTutorial, setShowTutorial] = useState(false);
 
   const [activeSidebarPanel, setActiveSidebarPanel] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // ─── Theme ───────────────────────────────────────────────────────────────────
   const [activeTheme, setActiveTheme] = useState<ThemeId>('holo-blue');
@@ -1494,7 +1495,22 @@ export default function App() {
       </header>
 
       {/* SideNavBar */}
-      <aside className="absolute left-8 top-1/2 -translate-y-1/2 bg-white border border-black/5 flex flex-col py-6 px-3 gap-2 z-40 shadow-[0_10px_30px_rgba(0,61,106,0.08)] rounded-[2rem]">
+      <aside className={`absolute left-8 top-1/2 -translate-y-1/2 z-40 transition-all duration-300 ${sidebarCollapsed ? 'translate-x-[-70px]' : 'translate-x-0'}`}>
+        {/* Collapse/Expand toggle */}
+        <button
+          onClick={() => { setSidebarCollapsed(!sidebarCollapsed); if (!sidebarCollapsed) setActiveSidebarPanel(null); }}
+          className={`absolute z-50 w-7 h-14 bg-white border border-black/5 flex items-center justify-center cursor-pointer shadow-[0_4px_12px_rgba(0,61,106,0.1)] transition-all duration-300 hover:bg-[#F3F3F3] ${
+            sidebarCollapsed
+              ? '-right-9 top-1/2 -translate-y-1/2 rounded-r-xl'
+              : '-right-5 top-1/2 -translate-y-1/2 rounded-r-xl'
+          }`}
+          title={sidebarCollapsed ? 'Show toolbar' : 'Hide toolbar'}
+        >
+          <span className={`material-symbols-outlined text-[#42474F] text-sm transition-transform duration-300 ${sidebarCollapsed ? 'rotate-0' : 'rotate-180'}`}>
+            chevron_right
+          </span>
+        </button>
+        <div className={`bg-white border border-black/5 flex flex-col py-6 px-3 gap-2 shadow-[0_10px_30px_rgba(0,61,106,0.08)] rounded-[2rem] transition-opacity duration-300 ${sidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
         <nav className="flex-1 flex flex-col gap-2">
           {/* Select tool */}
           <div onClick={() => {
@@ -1657,6 +1673,7 @@ export default function App() {
           }} className="w-full py-2 bg-[#FF3B30]/10 text-[#FF3B30] text-[10px] font-bold space-grotesk tracking-widest hover:bg-[#FF3B30] hover:text-white active:bg-[#FF3B30]/80 rounded-full transition-all">
             CALIBRATE
           </button>
+        </div>
         </div>
       </aside>
 
