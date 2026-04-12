@@ -1389,13 +1389,14 @@ export default function App() {
       </Suspense>
     );
   }
-
-  // Show skeleton while canvas initializes
-  if (!appReady) {
-    return <AppSkeleton />;
-  }
-
   return (
+    <>
+    {/* Skeleton overlay — fades out after first canvas frame */}
+    {!appReady && (
+      <div className="fixed inset-0 z-[200] transition-opacity duration-300">
+        <AppSkeleton />
+      </div>
+    )}
     <div className="bg-[#FAFAFA] text-on-surface h-screen w-screen overflow-hidden relative flex flex-col">
       {/* TopAppBar */}
       <header className="absolute top-0 left-0 w-full flex justify-between items-center px-12 h-20 z-50 bg-transparent border-b border-black/5">
@@ -1978,11 +1979,11 @@ export default function App() {
         </div>
 
         {/* Webcam Setup & HUD */}
-        <div className="absolute bottom-8 right-8 w-64 aspect-video glass-panel overflow-hidden border border-primary/20 z-20">
+        <div className="absolute bottom-8 right-8 w-80 aspect-video glass-panel overflow-hidden border border-primary/20 z-20 rounded-2xl">
           <div className="absolute inset-0 bg-zinc-900/60 z-0 flex items-center justify-center text-white/50 text-xs text-center p-2">
             {!isReady && !error && "Loading AI Models..."}
             {error && <span className="text-red-500 font-bold bg-red-500/10 px-2 py-1 rounded-2xl">{error}</span>}
-            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover mix-blend-luminosity opacity-40 -scale-x-100"></video>
+            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover opacity-70 -scale-x-100"></video>
             <canvas ref={hudCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none object-cover -scale-x-100"></canvas>
           </div>
 
@@ -2360,5 +2361,6 @@ export default function App() {
         </Suspense>
       )}
     </div>
+    </>
   );
 }
