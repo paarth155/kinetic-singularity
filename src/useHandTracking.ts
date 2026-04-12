@@ -135,6 +135,14 @@ export function useHandTracking(
 
     const lostHandFrames: Record<string, number> = { Left: 0, Right: 0 };
 
+    // Handedness identity lock — prevents flickering between Left/Right
+    // Tracks how many consecutive frames the classifier disagrees with the current assignment
+    const handednessLock: Record<string, { identity: 'Left' | 'Right' | null; disagreementCount: number }> = {
+      slot0: { identity: null, disagreementCount: 0 },
+      slot1: { identity: null, disagreementCount: 0 },
+    };
+    const HANDEDNESS_LOCK_FRAMES = 15; // frames of consistent disagreement before allowing a switch
+
     const streamRef = { current: null as MediaStream | null };
     navigator.mediaDevices
       .getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } } })
@@ -523,6 +531,41 @@ export function useHandTracking(
 
             // Filter out any unassignable 3rd ghost hands
             currentHandsInfo = currentHandsInfo.filter(info => info.assigned !== null).slice(0, 2);
+
+            // ─── Handedness Lock: stabilize identity per detection slot ───
+            currentHandsInfo.forEach((info, idx) => {
+              const slotKey = `slot${idx}`;
+              const lock = handednessLock[slotKey];
+              if (!lock) return;
+
+              if (lock.identity === null) {
+                // First assignment — lock it immediately
+                lock.identity = info.assigned;
+                lock.disagreementCount = 0;
+              } else if (info.assigned !== lock.identity) {
+                // Classifier disagrees with the locked identity
+                lock.disagreementCount++;
+                if (lock.disagreementCount >= HANDEDNESS_LOCK_FRAMES) {
+                  // Enough consecutive disagreements — allow the switch
+                  lock.identity = info.assigned;
+                  lock.disagreementCount = 0;
+                } else {
+                  // Not enough evidence to switch — keep the locked identity
+                  info.assigned = lock.identity;
+                }
+              } else {
+                // Classifier agrees — reset disagreement counter
+                lock.disagreementCount = 0;
+              }
+            });
+
+            // Reset lock slots when hands disappear
+            if (currentHandsInfo.length === 0) {
+              handednessLock.slot0 = { identity: null, disagreementCount: 0 };
+              handednessLock.slot1 = { identity: null, disagreementCount: 0 };
+            } else if (currentHandsInfo.length === 1) {
+              handednessLock.slot1 = { identity: null, disagreementCount: 0 };
+            }
 
             const newHands: HandState[] = currentHandsInfo.map(({ rawLm, assigned }) => {
               const hand = assigned as 'Left' | 'Right';
